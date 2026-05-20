@@ -18,9 +18,14 @@ class PluginSpec:
         return raw[2:] if raw.startswith("__") else raw[1:] if raw.startswith(".") else raw
 
     @property
-    def size(self) -> int:
-        raw = self.defines.get("SEGMENT_SIZE", "0x1000")
-        return int(raw, 0)
+    def segment_size_auto(self) -> bool:
+        """True when SEGMENT_SIZE is NOT defined — pipeline will auto-calc."""
+        return "SEGMENT_SIZE" not in self.defines
+
+    @property
+    def size(self) -> int | None:
+        raw = self.defines.get("SEGMENT_SIZE")
+        return int(raw, 0) if raw is not None else None
 
     @property
     def hook_addr(self) -> int | None:
