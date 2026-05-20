@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# User binaries (keep folder, ignore contents)
+binaries/*
+!binaries/.gitkeep
+
+# Claude
+.claude/

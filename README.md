@@ -1,8 +1,31 @@
+<p align="center">
+  <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
+  <img src="https://img.shields.io/badge/Target-iOS%20Mach--O%20%7C%20Android%20ELF-lightgrey?logo=apple" alt="Target">
+  <img src="https://img.shields.io/badge/Engine-Python%203%20%2B%20Clang%2FLLVM-yellow?logo=python" alt="Python+Clang">
+  <img src="https://img.shields.io/badge/Binary-LIEF-orange?logo=bookstack" alt="LIEF">
+  <img src="https://img.shields.io/badge/Hook-Static%20Inline-red" alt="Static Inline Hook">
+</p>
+
 # ArmCaveHook
 
 ARM 跨平台静态 Inline Hook 自动化框架，专为已编译 AArch64 二进制（Android ELF / iOS Mach-O）设计。
 
 **插件化 · 无头文件 · 全自动 · 零汇编**
+
+## 项目介绍
+
+ArmCaveHook 是一个面向 ARM64 平台的静态二进制插桩框架。与传统动态 Hook 工具（如 Frida、Substrate）不同，它直接修改磁盘上的二进制文件，无需运行时依赖。
+
+**工作方式：** 框架读取已编译的 Mach-O / ELF 二进制，在目标地址处将原始指令替换为无条件跳转（B 指令），跳入框架自动新增的 Code Cave 代码段。Cave 内依次调用用户编写的 C 插件函数，执行完毕后恢复被覆盖的原始指令，再跳回原程序继续运行。
+
+**两种注入模式：**
+
+| 模式 | HOOK_ADDR | 行为 |
+|---|---|---|
+| 独立函数注入 | 不定义 | 只将 C 代码编译为机器码，放入新增段，不修改原程序 |
+| Inline Hook | 定义目标地址 | 打断原指令 → 跳入 Cave → 执行插件 → 恢复 → 跳回 |
+
+**适用场景：** iOS/Android 逆向分析、游戏修改、安全研究、二进制插桩教学。由于修改是静态的，修改后的二进制可直接分发，目标设备无需越狱/Root 或安装任何框架。
 
 ## 核心架构
 
@@ -21,27 +44,62 @@ ARM 跨平台静态 Inline Hook 自动化框架，专为已编译 AArch64 二进
 - **插件化**：`plugins/` 目录放纯 C 文件，新增功能无需修改主控代码
 - **全自动解析**：Python 通过正则读取 C 文件顶部 `#define`，自动获取目标地址、偏移等
 - **自动扩容**：根据所有插件编译后的机器码大小计算 segment 大小
-- **自动 Hook**：原指令打掉换 B → Code Cave 执行插件 → 恢复原指令 → B 回下一指令
+- **两种模式**：
+  - **独立函数**（无 `HOOK_ADDR`）：纯粹向二进制注入代码段，不修改原程序
+  - **Inline Hook**（含 `HOOK_ADDR`）：原指令打掉换 B → Code Cave 执行插件 → 恢复原指令 → B 回下一指令
 - **零汇编**：核心逻辑用纯 C 编写，clang 编译为裸机 ARM64 机器码
 - **静态无依赖**：直接修改二进制文件，运行时无需任何插件或服务
+- **Web 管理界面**：可视化插件编辑、流水线控制、二进制分析
 
-## 工作流
+## 目录
 
-1. 编写插件：在 `plugins/` 新建 C 文件，顶部写 `#define` 宏，下方写 Hook 逻辑
-2. 运行主控：Python 自动遍历、解析宏、编译、注入
-3. 输出成品：保存修改后的二进制，iOS 需重签名，Android 直接使用
+```text
+ArmCaveHook/
+├── armcave.py              # CLI 主入口
+├── webui.py                # Web 管理界面
+├── run.sh                  # Web UI 一键启动脚本
+├── tools/
+│   ├── pipeline.py         # 流水线调度
+│   ├── plugin.py           # 插件解析
+│   ├── compiler.py         # clang 编译
+│   ├── segment.py          # 段管理（Mach-O / ELF）
+│   └── patcher.py          # Hook 跳转编码与回写
+├── plugins/
+│   ├── standalone_func.c   # 独立函数示例（无 HOOK_ADDR）
+│   └── inline_hook.c       # Inline Hook 示例（含 HOOK_ADDR）
+├── binaries/               # 目标二进制文件存放目录
+├── static/                 # Web UI 静态资源
+└── templates/              # Web UI 模板
+```
 
 ## 插件格式
 
+### 独立函数插件（无 HOOK_ADDR）
+
+仅向二进制注入代码段，不 Hook 任何地址：
+
 ```c
-#define SEGMENT_NAME nulcorepivot
-#define SEGMENT_SIZE 0x1000
-#define HOOK_ADDR   0x123456
-#define HOOK_SIZE   0x4
+#define SEGMENT_NAME myfunc
 
 __attribute__((used))
-static int my_hook(int x) {
-    return x + 1;
+static int my_add(int x, int y) {
+    return x + y;
+}
+```
+
+### Inline Hook 插件（含 HOOK_ADDR）
+
+在目标地址打断原指令，跳入 Code Cave 执行 Hook 函数：
+
+```c
+#define SEGMENT_NAME myhook
+#define HOOK_ADDR   0x123456
+
+__attribute__((used))
+static int hook_entry(int arg0) {
+    // arg0 = x0 寄存器在 Hook 点的值
+    if (arg0 > 100) return 0;
+    return arg0 * 2;
 }
 ```
 
@@ -49,31 +107,32 @@ static int my_hook(int x) {
 
 | 宏 | 必填 | 说明 |
 |---|---|---|
-| `SEGMENT_NAME` | 是 | 段核心名，Mach-O 自动加 `__` 前缀，ELF 自动加 `.` 前缀 |
-| `SEGMENT_SIZE` | 否 | 预留段大小（默认 0x1000），实际会按编译结果自动计算 |
-| `HOOK_ADDR` | 否 | 目标 hook 地址（不填则用 entrypoint） |
-| `HOOK_SIZE` | 否 | Hook 窗口大小，必须 ≥ 原指令长度且 4 字节对齐（默认 0x4） |
+| `SEGMENT_NAME` | **是** | 段核心名，Mach-O 自动加 `__` 前缀，ELF 自动加 `.` 前缀 |
+| `HOOK_ADDR` | 否 | 目标 hook 地址（不填则仅注入代码，不修改原程序） |
+| `HOOK_SIZE` | 否 | Hook 跳转窗口大小（不填默认 `0x4`，4 字节对齐） |
+
+> **SEGMENT_SIZE 无需指定** — pipeline 根据 clang 编译后的机器码体积 + 跳转控制开销自动计算，全程零手工。
 
 ## 用法
 
+### CLI
+
 ```bash
-python3 armcave.py Arc-mobile -o output.bin
-python3 armcave.py Arc-mobile --dry-run
+# 独立函数注入（无 HOOK_ADDR 的插件）
+python3 armcave.py binaries/Arc-mobile -o binaries/output.bin
+
+# 模拟运行，仅扫描不修改
+python3 armcave.py binaries/Arc-mobile --dry-run
 ```
 
-## 目录
+### Web 管理界面
 
-```text
-ArmCaveHook/
-├── armcave.py          # 主入口
-├── tools/
-│   ├── pipeline.py     # 流水线调度
-│   ├── plugin.py       # 插件解析
-│   ├── compiler.py     # clang 编译
-│   ├── segment.py      # 段管理（Mach-O / ELF）
-│   └── patcher.py      # Hook 跳转编码与回写
-├── plugins/
-│   ├── sample_hook.c
-│   └── second_hook.c
-└── Arc-mobile          # 目标二进制
+```bash
+./run.sh
+# 浏览器访问 http://127.0.0.1:5000
 ```
+
+Web UI 功能：
+- **仪表盘**：项目概览、插件列表、项目文档
+- **插件管理**：在线创建/编辑/删除插件，支持语法编译检查
+- **注入控制**：拖拽/选择二进制文件，模拟运行或执行注入，实时查看输出日志，一键下载修补后文件

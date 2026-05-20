@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-header">
+  <h1>{{ t('pipeline_control') }}</h1>
+</div>
+
+<div class="card">
+  <h2>{{ t('target_binary') }}</h2>
+
+  <div class="form-group" style="margin-bottom: 16px;">
+    <label for="binary-select">{{ t('select_binary') }}</label>
+    <select id="binary-select">
+      <option value="">--</option>
+      {% for b in binaries %}
+      <option value="{{ b.name }}">{{ b.name }} ({{ "%.1f"|format(b.size / 1024) }} KB)</option>
+      {% endfor %}
+    </select>
+    {% if not binaries %}
+    <small class="muted" style="margin-top:4px">{{ t('no_binaries') }}</small>
+    {% endif %}
+  </div>
+
+  <div class="form-group">
+    <label for="output-name">{{ t('output_name') }} <small>({{ t('output_optional') }})</small></label>
+    <input type="text" id="output-name" placeholder="auto: name.patched.ext">
+  </div>
+
+  <div class="form-actions" style="margin-top: 20px;">
+    <button type="button" id="btn-run" class="btn btn-danger-glow">{{ t('inject_btn') }}</button>
+  </div>
+</div>
+
+<div id="binary-info-panel" class="card" style="display:none">
+  <h2>{{ t('binary_info') }}</h2>
+  <div class="binary-meta">
+    <div class="meta-item"><span class="meta-label">{{ t('format_label') }}</span><span id="meta-format">—</span></div>
+    <div class="meta-item"><span class="meta-label">{{ t('arch_label') }}</span><span id="meta-arch">—</span></div>
+    <div class="meta-item"><span class="meta-label">{{ t('entrypoint_label') }}</span><code id="meta-entry">—</code></div>
+  </div>
+  <details style="margin-top:12px">
+    <summary>{{ t('segments_label') }}</summary>
+    <div id="segments-table" style="margin-top:8px; max-height:200px; overflow-y:auto"></div>
+  </details>
+  <div style="margin-top:14px">
+    <label style="font-size:13px; color:var(--muted); font-weight:600">{{ t('hex_preview') }}</label>
+    <div style="display:flex; gap:8px; margin-top:4px">
+      <input type="text" id="hex-addr" placeholder="0x1000c2fd0" style="flex:1">
+      <button type="button" id="btn-hex-preview" class="btn-sm">{{ t('view_btn') }}</button>
+    </div>
+    <pre id="hex-output" style="display:none; margin-top:8px; padding:10px 14px; background:var(--bg); border-radius:8px; font-family:monospace; font-size:13px; overflow-x:auto"></pre>
+  </div>
+</div>
+
+<div id="download-panel" style="display:none; margin-bottom:16px">
+  <a id="btn-download" href="#" class="btn btn-primary">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+    </svg>
+    {{ t('download_patched') }}
+  </a>
+</div>
+
+<div class="card">
+  <div class="terminal-header-bar">
+    <h2>{{ t('output_log') }}</h2>
+    <div class="terminal-dots">
+      <span class="dot dot-red"></span>
+      <span class="dot dot-yellow"></span>
+      <span class="dot dot-green"></span>
+    </div>
+  </div>
+  <div class="terminal">
+    <pre id="output-log"></pre>
+  </div>
+</div>
+
+{% endblock %}

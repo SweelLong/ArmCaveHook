@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ArmCaveHook</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <circle cx="14" cy="14" r="12" stroke="currentColor" stroke-width="2"/>
+          <path d="M14 2 L14 8 M14 20 L14 26 M2 14 L8 14 M20 14 L26 14" stroke="currentColor" stroke-width="2"/>
+          <circle cx="14" cy="14" r="4" fill="currentColor"/>
+        </svg>
+        <div class="breath-ring ring-1"></div>
+        <div class="breath-ring ring-2"></div>
+      </div>
+      <span class="brand-text">{{ t('title') }}</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <a href="/?lang={{ lang }}" class="nav-item {{ 'active' if request.path == '/' }}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+        </svg>
+        {{ t('overview') }}
+      </a>
+      <a href="/plugins?lang={{ lang }}" class="nav-item {{ 'active' if request.path == '/plugins' }}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+        </svg>
+        {{ t('plugins') }}
+        <span id="plugin-count-badge" class="badge">{{ plugins_count }}</span>
+      </a>
+      <a href="/files?lang={{ lang }}" class="nav-item {{ 'active' if request.path == '/files' }}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+        {{ t('file_mgmt') }}
+      </a>
+      <a href="/pipeline?lang={{ lang }}" class="nav-item {{ 'active' if request.path == '/pipeline' }}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        {{ t('pipeline') }}
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <a href="?lang={{ 'zh' if lang == 'en' else 'en' }}" class="lang-switch">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+        {{ t('lang_switch') }}
+      </a>
+    </div>
+  </aside>
+
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="/static/i18n.js"></script>
+  <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

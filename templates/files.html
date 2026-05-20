@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-header">
+  <h1>{{ t('file_mgmt') }}</h1>
+</div>
+
+<div class="card">
+  <div id="drop-zone" class="drop-zone glow-cyan" style="margin-bottom:16px">
+    <div class="drop-zone-inner">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="drop-icon">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <p class="drop-text">{{ t('drag_text') }}</p>
+      <p class="drop-hint">{{ t('drag_hint') }}</p>
+    </div>
+    <input type="file" id="file-input" accept="*" hidden>
+  </div>
+
+  <div id="selected-file" class="selected-file" style="display:none">
+    <div class="file-chip">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+        <polyline points="13 2 13 9 20 9"/>
+      </svg>
+      <span id="selected-name"></span>
+      <span class="file-size" id="selected-size"></span>
+      <button id="btn-remove-file" class="btn-icon" title="Remove">&times;</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div id="file-mgmt-list"></div>
+</div>
+
+{% endblock %}
