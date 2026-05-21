@@ -224,7 +224,7 @@ def _list_binaries() -> list[dict]:
     binaries = []
     if BINARIES_DIR.exists():
         for f in BINARIES_DIR.iterdir():
-            if f.is_file() and f.name != ".DS_Store":
+            if f.is_file() and not f.name.startswith("."):
                 try:
                     size = f.stat().st_size
                 except OSError:
@@ -243,7 +243,7 @@ def _list_plugins() -> list[dict]:
                     "name": path.name,
                     "stem": path.stem,
                     "segment": spec.segment_core,
-                    "hook_addr": f"0x{spec.hook_addr:x}" if spec.hook_addr else "auto (entrypoint)",
+                    "hook_addr": f"0x{spec.hook_file_off:x}" if spec.hook_file_off else "auto (entrypoint)",
                     "hook_size": f"0x{spec.hook_size:x} (auto)" if "HOOK_SIZE" not in spec.defines else f"0x{spec.hook_size:x}",
                     "size": "auto" if spec.segment_size_auto else f"0x{spec.size:x}",
                     "content": path.read_text(encoding="utf-8", errors="ignore"),
@@ -336,7 +336,7 @@ def api_plugin_get(name: str):
             "stem": path.stem,
             "content": path.read_text(encoding="utf-8", errors="ignore"),
             "segment": spec.segment_core,
-            "hook_addr": f"0x{spec.hook_addr:x}" if spec.hook_addr else "auto (entrypoint)",
+            "hook_addr": f"0x{spec.hook_file_off:x}" if spec.hook_file_off else "auto (entrypoint)",
             "hook_size": f"0x{spec.hook_size:x}",
             "size": "auto" if spec.segment_size_auto else f"0x{spec.size:x}",
         })
@@ -429,7 +429,9 @@ def api_pipeline_run():
     data = request.get_json(force=True)
     binary_name = (data.get("binary") or "").strip()
     output_name = (data.get("output") or "").strip()
-    selected_plugins = data.get("plugins") or None
+    selected_plugins = data.get("plugins", None)
+    if selected_plugins is not None and not isinstance(selected_plugins, list):
+        selected_plugins = None
 
     if not binary_name:
         return jsonify({"error": "no binary selected"}), 400

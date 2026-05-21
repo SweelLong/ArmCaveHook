@@ -146,6 +146,8 @@ document.querySelectorAll(".plugin-select").forEach(function (cb) {
   cb.addEventListener("change", function () { persistPluginCheckboxes(); });
 });
 
+updatePluginCountBadge();
+
 function persistPluginCheckboxes() {
   var names = [];
   document.querySelectorAll(".plugin-select:checked").forEach(function (cb) {
@@ -161,6 +163,22 @@ function persistPluginCheckboxes() {
   // update select-all state
   var sa = document.getElementById("select-all-plugins");
   if (sa) sa.checked = names.length === all.length;
+  updatePluginCountBadge();
+}
+
+function updatePluginCountBadge() {
+  var badge = document.getElementById("plugin-count-badge");
+  if (!badge) return;
+  var sel = getSelectedPlugins();
+  if (sel === null) {
+    // all enabled — count from DOM or pipeline list
+    var cbs = document.querySelectorAll(".plugin-select");
+    if (cbs.length > 0) { badge.textContent = cbs.length; return; }
+    var pcbs = document.querySelectorAll(".pipeline-plugin-select");
+    if (pcbs.length > 0) { badge.textContent = pcbs.length; return; }
+    return;
+  }
+  badge.textContent = sel.length;
 }
 
 // render plugin checkboxes on pipeline page
@@ -203,7 +221,9 @@ function renderPluginListFromData(list, count, plugins) {
   list.innerHTML = html || '<span class="muted">—</span>';
 
   var checkedCount = list.querySelectorAll("input:checked").length;
-  if (count) count.textContent = "(" + checkedCount + "/" + plugins.length + ")";
+  if (count) count.textContent = "(" + checkedCount + ")";
+
+  updatePluginCountBadge();
 
   // bind change events
   list.querySelectorAll(".pipeline-plugin-select").forEach(function (cb) {
@@ -218,7 +238,8 @@ function renderPluginListFromData(list, count, plugins) {
       } else {
         setSelectedPlugins(sel);
       }
-      if (count) count.textContent = "(" + sel.length + "/" + total + ")";
+      if (count) count.textContent = "(" + sel.length + ")";
+      updatePluginCountBadge();
     });
   });
 }
@@ -487,25 +508,7 @@ if (btnSave) {
   });
 }
 
-// ── toggle switches ─────────────────────────
-
-document.querySelectorAll(".plugin-select").forEach(function (cb) {
-  cb.checked = isPluginSelected(cb.dataset.name);
-  cb.addEventListener("change", function () {
-    var names = [];
-    document.querySelectorAll(".plugin-select:checked").forEach(function (c) {
-      names.push(c.dataset.name);
-    });
-    var all = document.querySelectorAll(".plugin-select");
-    if (names.length === all.length) {
-      localStorage.removeItem(PLUGIN_STORAGE_KEY);
-    } else {
-      setSelectedPlugins(names);
-    }
-  });
-});
-
-// ── plugin priority ordering (drag & drop) ──
+// ── priority ordering on plugins page ──
 
 var PRIORITY_KEY = "armcave-plugin-order";
 
@@ -600,9 +603,23 @@ if (document.querySelector(".plugin-priority")) {
 function getOrderedPluginNames() {
   var order = getPluginOrder();
   var sel = getSelectedPlugins();
+  // if no priority order set, build from all known plugin names
+  if (order.length === 0) {
+    var allCbs = document.querySelectorAll(".plugin-select");
+    if (allCbs.length === 0) {
+      // neither order nor DOM available — let server decide
+      return sel !== null ? sel : null;
+    }
+    allCbs.forEach(function (cb) { order.push(cb.dataset.name); });
+  }
   // filter to selected, preserve priority order
   if (sel === null) return order;
-  return order.filter(function (n) { return sel.indexOf(n) !== -1; });
+  var result = order.filter(function (n) { return sel.indexOf(n) !== -1; });
+  // append any selected plugins not yet in priority order
+  sel.forEach(function (n) {
+    if (result.indexOf(n) === -1) result.push(n);
+  });
+  return result;
 }
 
 // ── segment conflict detection ─────────────

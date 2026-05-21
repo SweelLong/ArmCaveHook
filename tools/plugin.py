@@ -28,7 +28,7 @@ class PluginSpec:
         return int(raw, 0) if raw is not None else None
 
     @property
-    def hook_addr(self) -> int | None:
+    def hook_file_off(self) -> int | None:
         raw = self.defines.get("HOOK_ADDR")
         return int(raw, 0) if raw is not None else None
 
