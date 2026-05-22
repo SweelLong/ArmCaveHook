@@ -62,9 +62,10 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
 
     # ── standalone: each plugin gets its own segment ──
     for p in standalone:
-        blob = compile_plugin(p.path)
-        print(f"[standalone] {p.name}: {len(blob)} bytes -> segment {p.segment_core}")
-        add_segment(output_path, SegmentPlan(p.segment_core, len(blob), blob), output_path)
+        blob = compile_plugin(p.path, target_binary=input_path)
+        blob_bytes = blob.build(0, 0)  # standalone: offset 0 in segment
+        print(f"[standalone] {p.name}: {len(blob_bytes)} bytes -> segment {p.segment_core}")
+        add_segment(output_path, SegmentPlan(p.segment_core, len(blob_bytes), blob_bytes), output_path)
 
     is_macho = isinstance(_reparse(), lief.MachO.Binary)
 
@@ -87,9 +88,9 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
 
             plugin_blobs = []
             for p in group:
-                blob = compile_plugin(p.path)
+                blob = compile_plugin(p.path, target_binary=input_path)
                 plugin_blobs.append(blob)
-                print(f"  {p.name}: {len(blob)} bytes")
+                print(f"  {p.name}: {blob.total_bytes} bytes")
 
             if is_macho:
                 hook_va, cave_va = patch_hook_macho(

@@ -5,11 +5,12 @@
  * HOOK_ADDR 请替换为实际要 Hook 的虚拟地址。
  */
 #define SEGMENT_NAME hello_inline
-#define HOOK_ADDR 0x4E8
-#include "stdio.h"
+#define HOOK_ADDR 0x460
+
 __attribute__((used))
 static int hook_entry(int arg0) {
     // arg0 = x0 寄存器在 Hook 点的值
-    printf("%d", arg0);
+    _printf("[hook] arg0=%d\n", arg0);
+    //arm_logf("[log] arg0=%d\n", arg0);
     return -1;
 }

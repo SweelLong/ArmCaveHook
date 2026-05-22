@@ -116,6 +116,11 @@ T = {
         "priority": "Priority",
         "segment_conflict_error": "SEGMENT_NAME '{seg}' is already used by '{other}'. Each plugin must use a unique segment name.",
         "segment_conflict_warn": "Segment '{seg}' is also used by '{other}'",
+        "available_symbols": "Available Symbols",
+        "reference_binary": "Reference Binary",
+        "no_binary_for_symbols": "Select a binary to see available symbols",
+        "builtin": "built-in",
+        "imported": "imported",
     },
     "zh": {
         "title": "ArmCaveHook",
@@ -186,6 +191,11 @@ T = {
         "priority": "优先级",
         "segment_conflict_error": "SEGMENT_NAME '{seg}' 已被 '{other}' 使用，不同插件必须使用不同的段名。",
         "segment_conflict_warn": "段名 '{seg}' 也被 '{other}' 使用",
+        "available_symbols": "可用符号",
+        "reference_binary": "参考二进制",
+        "no_binary_for_symbols": "选择一个二进制文件以查看可用符号",
+        "builtin": "内置",
+        "imported": "导入",
     },
 }
 
@@ -305,7 +315,7 @@ def index():
 
 @app.route("/plugins")
 def plugins_page():
-    return render_template("plugins.html", plugins=_list_plugins())
+    return render_template("plugins.html", plugins=_list_plugins(), binaries=_list_binaries())
 
 
 @app.route("/files")
@@ -495,6 +505,25 @@ def api_upload():
     return jsonify({"ok": True, "name": name, "size": dest.stat().st_size})
 
 
+@app.route("/api/binary/symbols", methods=["POST"])
+def api_binary_symbols():
+    """Return callable symbols (imports + builtins) from a binary."""
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "no binary name"}), 400
+    path = BINARIES_DIR / name
+    if not path.exists():
+        return jsonify({"error": f"not found: {name}"}), 404
+
+    try:
+        from tools.symbols import list_available_symbols
+        symbols = list_available_symbols(path)
+        return jsonify({"symbols": symbols})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/api/plugins/compile-check", methods=["POST"])
 def api_compile_check():
     """Quick compile a C source snippet without running full pipeline."""
@@ -514,8 +543,11 @@ def api_compile_check():
             result = subprocess.run(
                 [
                     "clang", "-target", "arm64-apple-macosx13.0",
-                    "-c", "-Oz", "-ffreestanding", "-fno-stack-protector",
-                    "-fno-builtin", "-fsyntax-only",
+                    "-c", "-Oz", "-fno-stack-protector",
+                    "-I", str(PROJECT_ROOT / "plugins"),
+                    "-include", "armcave.h",
+                    "-Wno-implicit-function-declaration",
+                    "-fsyntax-only",
                     str(src),
                 ],
                 capture_output=True, text=True, timeout=15,
