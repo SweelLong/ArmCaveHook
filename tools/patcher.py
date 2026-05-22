@@ -35,22 +35,40 @@ def build_hook_cave(
     hook_va: int,
     hook_size: int,
     original_bytes: bytes,
-    plugin_blobs: list[bytes],
+    plugin_blobs: list,
+    target_binary: Path | None = None,
 ) -> bytes:
     if not original_bytes or len(original_bytes) % 4:
         raise ValueError("hook window must be a non-empty multiple of 4 bytes")
     if hook_size < len(original_bytes) or hook_size % 4:
         raise ValueError("hook size must cover the preserved bytes and be 4-byte aligned")
 
+    from .compiler import PluginBlob
+
     n_plugins = len(plugin_blobs)
     # layout: stp | BL*N | ldp | original | B
     control_size = 4 + 4 * n_plugins + 4 + len(original_bytes) + 4
+
+    # Compute plugin offsets and build resolved blobs
     plugin_offsets: list[int] = []
+    resolved_blobs: list[bytes] = []
     cursor = control_size
     for blob in plugin_blobs:
         cursor = (cursor + 3) & ~3
         plugin_offsets.append(cursor)
-        cursor += (len(blob) + 3) & ~3
+
+        if isinstance(blob, PluginBlob):
+            text_va = cave_va + cursor
+            aligned_text_size = (len(blob.text) + 15) & ~15
+            data_va = text_va + aligned_text_size
+            built = blob.build(text_va, data_va, target_binary)
+            resolved_blobs.append(built)
+            cursor += len(built)
+        else:
+            resolved_blobs.append(blob)
+            cursor += len(blob)
+
+        cursor = (cursor + 3) & ~3
 
     out = bytearray()
 
@@ -74,9 +92,9 @@ def build_hook_cave(
     out += encode_b(b_back_src, hook_va + hook_size).to_bytes(4, "little")
 
     # plugin blobs
-    for blob in plugin_blobs:
-        out += blob
-        pad = (-len(blob)) % 4
+    for blob_bytes in resolved_blobs:
+        out += blob_bytes
+        pad = (-len(blob_bytes)) % 4
         if pad:
             out += b"\x00" * pad
 
@@ -174,9 +192,13 @@ def patch_hook_macho(
     macho = lief.MachO.parse(str(binary_path))
     binary = macho[0]
 
+    from .compiler import PluginBlob
+
     n_plugins = len(plugin_blobs)
     control_size = 4 + 4 * n_plugins + 4 + len(original_bytes) + 4
-    payload_size = sum((len(b) + 3) & ~3 for b in plugin_blobs)
+    payload_size = sum(
+        (b.total_bytes if isinstance(b, PluginBlob) else len(b)) for b in plugin_blobs
+    )
     cave_size = control_size + payload_size
 
     _macho_add_segment(binary, seg_name, b"\x00" * cave_size)
@@ -207,7 +229,7 @@ def patch_hook_macho(
     cave_va = new_seg.virtual_address
 
     # ── build the real cave blob with correct VAs ──
-    cave_blob = build_hook_cave(cave_va, new_hook_va, hook_size, original_bytes, plugin_blobs)
+    cave_blob = build_hook_cave(cave_va, new_hook_va, hook_size, original_bytes, plugin_blobs, target_binary=binary_path)
 
     # ── pass 2: update section content ──
     macho2 = lief.MachO.parse(str(output_path))

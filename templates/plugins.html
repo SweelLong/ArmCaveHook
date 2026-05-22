@@ -69,6 +69,21 @@
           </div>
         </div>
       </div>
+      <!-- available symbols panel -->
+      <div class="symbols-panel">
+        <div class="symbols-header">
+          <label>{{ t('available_symbols') }}  <span class="muted" style="font-size:11px">(built-in + imported from target binary)</span></label>
+          <select id="symbols-binary-select" class="symbols-binary-select">
+            <option value="">{{ t('select_binary') }}</option>
+            {% for b in binaries %}
+            <option value="{{ b.name }}">{{ b.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div id="symbols-list" class="symbols-list">
+          <span class="muted">{{ t('no_binary_for_symbols') }}</span>
+        </div>
+      </div>
       <div id="compile-result" style="display:none"></div>
       <div id="plugin-errors" class="alert alert-error" style="display:none"></div>
     </div>

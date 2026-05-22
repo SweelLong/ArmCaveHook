@@ -814,9 +814,9 @@ function highlightSyntax() {
   var text = codeTextarea.value;
   var html = text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  html = html.replace(/("(?:[^"\\]|\\.)*")/g, '<span class="syn-str">$1</span>');
   html = html.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="syn-cmt">$1</span>');
   html = html.replace(/(\/\/.*)/g, '<span class="syn-cmt">$1</span>');
-  html = html.replace(/("(?:[^"\\]|\\.)*")/g, '<span class="syn-str">$1</span>');
   html = html.replace(/^(#.*)$/gm, '<span class="syn-pp">$1</span>');
   html = html.replace(/(__attribute__)/g, '<span class="syn-attr">$1</span>');
   html = html.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g, '<span class="syn-num">$1</span>');
@@ -893,6 +893,53 @@ document.addEventListener("keydown", function (e) {
     }
   }
 });
+
+// ── available symbols panel ─────────────────
+
+var symbolsBinarySelect = document.getElementById("symbols-binary-select");
+if (symbolsBinarySelect) {
+  symbolsBinarySelect.addEventListener("change", function () {
+    var name = symbolsBinarySelect.value;
+    var list = document.getElementById("symbols-list");
+    if (!list) return;
+    if (!name) {
+      list.innerHTML = '<span class="muted">' + _("no_binary_for_symbols") + '</span>';
+      return;
+    }
+    list.innerHTML = '<span class="muted">Loading...</span>';
+    fetch("/api/binary/symbols", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          list.innerHTML = '<span class="muted">' + data.error + '</span>';
+          return;
+        }
+        var symbols = data.symbols || [];
+        if (symbols.length === 0) {
+          list.innerHTML = '<span class="muted">No symbols found</span>';
+          return;
+        }
+        var html = "";
+        symbols.forEach(function (s) {
+          var kindLabel = s.kind === "builtin" ? _("builtin") : _("imported");
+          var kindClass = s.kind === "builtin" ? "sym-kind-builtin" : "sym-kind-imported";
+          html += '<div class="sym-row">' +
+            '<code class="sym-name">' + s.name + '</code>' +
+            '<span class="sym-sig ' + kindClass + '">' + (s.signature || '') + '</span>' +
+            '<span class="sym-kind ' + kindClass + '">' + kindLabel + '</span>' +
+            '</div>';
+        });
+        list.innerHTML = html;
+      })
+      .catch(function () {
+        list.innerHTML = '<span class="muted">' + _("network_error") + '</span>';
+      });
+  });
+}
 
 // ── lang cookie ──────────────────────────────
 
