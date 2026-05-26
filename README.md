@@ -56,20 +56,21 @@ ArmCaveHook 是一个面向 ARM64 平台的静态二进制插桩框架。与传�
 ```text
 ArmCaveHook/
 ├── armcave.py              # CLI 主入口
-├── webui.py                # Web 管理界面
+├── webui.py                # Web 管理界面 (Flask)
 ├── run.sh                  # Web UI 一键启动脚本
 ├── tools/
 │   ├── pipeline.py         # 流水线调度
 │   ├── plugin.py           # 插件解析
 │   ├── compiler.py         # clang 编译
 │   ├── segment.py          # 段管理（Mach-O / ELF）
-│   └── patcher.py          # Hook 跳转编码与回写
+│   ├── patcher.py          # Hook 跳转编码与回写
+│   └── symbols.py          # 符号表解析与重定位
 ├── plugins/
-│   ├── standalone_func.c   # 独立函数示例（无 HOOK_ADDR）
-│   └── inline_hook.c       # Inline Hook 示例（含 HOOK_ADDR）
+│   ├── armcave.h           # 内置头文件（自动包含）
+│   └── hello_inline.c      # Inline Hook 示例
 ├── binaries/               # 目标二进制文件存放目录
-├── static/                 # Web UI 静态资源
-└── templates/              # Web UI 模板
+├── static/                 # Web UI 静态资源 (CSS/JS)
+└── templates/              # Web UI Jinja2 模板
 ```
 
 ## 插件格式
@@ -110,8 +111,9 @@ static int hook_entry(int arg0) {
 | `SEGMENT_NAME` | **是** | 段核心名，Mach-O 自动加 `__` 前缀，ELF 自动加 `.` 前缀 |
 | `HOOK_ADDR` | 否 | 目标 hook 地址（不填则仅注入代码，不修改原程序） |
 | `HOOK_SIZE` | 否 | Hook 跳转窗口大小（不填默认 `0x4`，4 字节对齐） |
+| `SEGMENT_SIZE` | 否 | 手动指定段大小（不填则自动根据编译后机器码体积计算） |
 
-> **SEGMENT_SIZE 无需指定** — pipeline 根据 clang 编译后的机器码体积 + 跳转控制开销自动计算，全程零手工。
+> 不填 `SEGMENT_SIZE` 时，pipeline 根据 clang 编译后的机器码体积 + 跳转控制开销自动计算，全程零手工。
 
 ## 用法
 
@@ -133,6 +135,8 @@ python3 armcave.py binaries/Arc-mobile --dry-run
 ```
 
 Web UI 功能：
-- **仪表盘**：项目概览、插件列表、项目文档
-- **插件管理**：在线创建/编辑/删除插件，支持语法编译检查
-- **注入控制**：拖拽/选择二进制文件，模拟运行或执行注入，实时查看输出日志，一键下载修补后文件
+- **仪表盘**：项目概览、项目文档（README 渲染）
+- **插件管理**：在线创建/编辑/重命名/删除插件，语法高亮编辑器，拖拽排序优先级，编译检查，段名冲突检测
+- **可用符号面板**：选择参考二进制后列出所有导入符号 + 内置符号，支持模糊搜索与双击复制
+- **文件管理**：拖拽上传/删除二进制文件
+- **注入控制**：选择二进制 + 插件组合，模拟运行或执行注入，实时 SSE 日志流，段信息与十六进制预览，一键下载修补后文件
