@@ -366,7 +366,7 @@ function renderFileMgmtList() {
         list.innerHTML = '<span class="muted">' + _("no_binaries") + '</span>';
         return;
       }
-      var html = '<table class="table"><thead><tr><th>File</th><th>Size</th><th style="width:60px"></th></tr></thead><tbody>';
+      var html = '<table class="table"><thead><tr><th>' + _("file") + '</th><th>' + _("size") + '</th><th style="width:60px"></th></tr></thead><tbody>';
       files.forEach(function (f) {
         html += '<tr id="filerow-' + f.name + '">' +
           '<td><code>' + f.name + '</code></td>' +
@@ -436,7 +436,6 @@ async function editPlugin(name) {
   editingPlugin = name;
   document.getElementById("plugin-filename").value = p.name;
   document.getElementById("plugin-content").value = p.content;
-  document.getElementById("plugin-filename").disabled = true;
   document.getElementById("plugin-errors").style.display = "none";
   var cr = document.getElementById("compile-result");
   if (cr) { cr.style.display = "none"; cr.textContent = ""; }
@@ -739,7 +738,7 @@ async function fetchBinaryInfo(name) {
     var segDiv = document.getElementById("segments-table");
     if (segDiv && info.segments) {
       var html = '<div class="seg-row" style="font-weight:600;color:var(--muted);font-size:11px">' +
-        '<span>Name</span><span>VA</span><span>VSize</span><span>FSize</span></div>';
+        '<span>' + _("name") + '</span><span>' + _("va") + '</span><span>' + _("vsize") + '</span><span>' + _("fsize") + '</span></div>';
       info.segments.forEach(function (s) {
         html += '<div class="seg-row">' +
           '<span class="seg-name">' + s.name + '</span>' +
@@ -896,17 +895,45 @@ document.addEventListener("keydown", function (e) {
 
 // ── available symbols panel ─────────────────
 
+var symbolsCache = [];
 var symbolsBinarySelect = document.getElementById("symbols-binary-select");
+var symbolsSearch = document.getElementById("symbols-search");
+var symbolsList = document.getElementById("symbols-list");
+
+function fuzzyMatch(text, query) {
+  return text.toLowerCase().indexOf(query.toLowerCase()) !== -1;
+}
+
+function renderSymbols(symbols) {
+  if (!symbolsList) return;
+  if (symbols.length === 0) {
+    symbolsList.innerHTML = '<span class="muted">' + _("no_symbols_found") + '</span>';
+    return;
+  }
+  var html = "";
+  symbols.forEach(function (s) {
+    var kindLabel = s.kind === "builtin" ? _("builtin") : _("imported");
+    var kindClass = s.kind === "builtin" ? "sym-kind-builtin" : "sym-kind-imported";
+    html += '<div class="sym-row" data-sym-name="' + s.name.replace(/"/g, '&quot;') + '" title="Double-click to copy">' +
+      '<code class="sym-name">' + s.name + '</code>' +
+      '<span class="sym-sig ' + kindClass + '">' + (s.signature || '') + '</span>' +
+      '<span class="sym-kind ' + kindClass + '">' + kindLabel + '</span>' +
+      '</div>';
+  });
+  symbolsList.innerHTML = html;
+}
+
 if (symbolsBinarySelect) {
   symbolsBinarySelect.addEventListener("change", function () {
     var name = symbolsBinarySelect.value;
-    var list = document.getElementById("symbols-list");
-    if (!list) return;
+    if (!symbolsList) return;
     if (!name) {
-      list.innerHTML = '<span class="muted">' + _("no_binary_for_symbols") + '</span>';
+      symbolsCache = [];
+      if (symbolsSearch) symbolsSearch.style.display = "none";
+      symbolsList.innerHTML = '<span class="muted">' + _("no_binary_for_symbols") + '</span>';
       return;
     }
-    list.innerHTML = '<span class="muted">Loading...</span>';
+    symbolsList.innerHTML = '<span class="muted">Loading...</span>';
     fetch("/api/binary/symbols", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -915,29 +942,52 @@ if (symbolsBinarySelect) {
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data.error) {
-          list.innerHTML = '<span class="muted">' + data.error + '</span>';
+          symbolsCache = [];
+          if (symbolsSearch) symbolsSearch.style.display = "none";
+          symbolsList.innerHTML = '<span class="muted">' + data.error + '</span>';
           return;
         }
-        var symbols = data.symbols || [];
-        if (symbols.length === 0) {
-          list.innerHTML = '<span class="muted">No symbols found</span>';
-          return;
+        symbolsCache = data.symbols || [];
+        if (symbolsSearch) {
+          symbolsSearch.style.display = symbolsCache.length ? "" : "none";
+          symbolsSearch.value = "";
         }
-        var html = "";
-        symbols.forEach(function (s) {
-          var kindLabel = s.kind === "builtin" ? _("builtin") : _("imported");
-          var kindClass = s.kind === "builtin" ? "sym-kind-builtin" : "sym-kind-imported";
-          html += '<div class="sym-row">' +
-            '<code class="sym-name">' + s.name + '</code>' +
-            '<span class="sym-sig ' + kindClass + '">' + (s.signature || '') + '</span>' +
-            '<span class="sym-kind ' + kindClass + '">' + kindLabel + '</span>' +
-            '</div>';
-        });
-        list.innerHTML = html;
+        renderSymbols(symbolsCache);
       })
       .catch(function () {
-        list.innerHTML = '<span class="muted">' + _("network_error") + '</span>';
+        symbolsCache = [];
+        if (symbolsSearch) symbolsSearch.style.display = "none";
+        symbolsList.innerHTML = '<span class="muted">' + _("network_error") + '</span>';
       });
+  });
+}
+
+if (symbolsSearch) {
+  symbolsSearch.addEventListener("input", function () {
+    var q = symbolsSearch.value.trim();
+    if (!q) {
+      renderSymbols(symbolsCache);
+      return;
+    }
+    var filtered = symbolsCache.filter(function (s) {
+      return fuzzyMatch(s.name, q) ||
+        (s.signature && fuzzyMatch(s.signature, q)) ||
+        fuzzyMatch(s.kind, q);
+    });
+    renderSymbols(filtered);
+  });
+}
+
+if (symbolsList) {
+  symbolsList.addEventListener("dblclick", function (e) {
+    var row = e.target.closest(".sym-row");
+    if (!row) return;
+    var name = row.getAttribute("data-sym-name");
+    if (!name) return;
+    navigator.clipboard.writeText(name).then(function () {
+      row.classList.add("sym-copied");
+      setTimeout(function () { row.classList.remove("sym-copied"); }, 600);
+    }).catch(function () {});
   });
 }
 

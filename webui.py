@@ -82,6 +82,11 @@ T = {
         "validation_error": "Validation Error",
         "binary_required": "Please select a target binary.",
         "file": "File",
+        "size": "Size",
+        "name": "Name",
+        "va": "VA",
+        "vsize": "VSize",
+        "fsize": "FSize",
         "binary_info": "Binary Info",
         "segments_label": "Segments",
         "hex_preview": "Hex Preview",
@@ -118,6 +123,7 @@ T = {
         "segment_conflict_warn": "Segment '{seg}' is also used by '{other}'",
         "available_symbols": "Available Symbols",
         "reference_binary": "Reference Binary",
+        "fuzzy_search": "Fuzzy search...",
         "no_binary_for_symbols": "Select a binary to see available symbols",
         "builtin": "built-in",
         "imported": "imported",
@@ -157,6 +163,11 @@ T = {
         "validation_error": "校验失败",
         "binary_required": "请先选择目标二进制文件。",
         "file": "文件",
+        "size": "大小",
+        "name": "名称",
+        "va": "虚拟地址",
+        "vsize": "虚拟大小",
+        "fsize": "文件大小",
         "binary_info": "二进制信息",
         "segments_label": "段信息",
         "hex_preview": "十六进制预览",
@@ -193,6 +204,7 @@ T = {
         "segment_conflict_warn": "段名 '{seg}' 也被 '{other}' 使用",
         "available_symbols": "可用符号",
         "reference_binary": "参考二进制",
+        "fuzzy_search": "模糊搜索...",
         "no_binary_for_symbols": "选择一个二进制文件以查看可用符号",
         "builtin": "内置",
         "imported": "导入",
@@ -391,6 +403,7 @@ def api_plugin_create():
 def api_plugin_update(name: str):
     data = request.get_json(force=True)
     content = (data.get("content") or "").strip()
+    new_name = (data.get("name") or "").strip()
 
     path = PLUGINS_DIR / name
     if not path.exists():
@@ -406,6 +419,14 @@ def api_plugin_update(name: str):
         conflict = _check_segment_conflict(new_seg, current_name=name)
         if conflict:
             return jsonify({"error": t("segment_conflict_error").format(seg=new_seg, other=conflict)}), 409
+
+    # handle rename
+    if new_name and new_name != name:
+        new_path = PLUGINS_DIR / new_name
+        if new_path.exists():
+            return jsonify({"error": f"plugin '{new_name}' already exists"}), 409
+        path.rename(new_path)
+        path = new_path
 
     path.write_text(content + "\n", encoding="utf-8")
     return jsonify({"ok": True})
