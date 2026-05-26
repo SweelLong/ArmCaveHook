@@ -1,7 +1,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
-  <img src="https://img.shields.io/badge/Target-iOS%20Mach--O%20%7C%20Android%20ELF-lightgrey?logo=apple" alt="Target">
-  <img src="https://img.shields.io/badge/Engine-Python%203%20%2B%20Clang%2FLLVM-yellow?logo=python" alt="Python+Clang">
+  <img src="https://img.shields.io/badge/Apple-iOS%20Mach--O-lightgrey?logo=apple" alt="Apple">
+    <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
+  <img src="https://img.shields.io/badge/Language-Python%203-yellow?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/Binary-LIEF-orange?logo=bookstack" alt="LIEF">
   <img src="https://img.shields.io/badge/Hook-Static%20Inline-red" alt="Static Inline Hook">
 </p>
@@ -140,3 +141,7 @@ Web UI 功能：
 - **可用符号面板**：选择参考二进制后列出所有导入符号 + 内置符号，支持模糊搜索与双击复制
 - **文件管理**：拖拽上传/删除二进制文件
 - **注入控制**：选择二进制 + 插件组合，模拟运行或执行注入，实时 SSE 日志流，段信息与十六进制预览，一键下载修补后文件
+
+## TODO
+
+- [ ] 兼容更多架构
