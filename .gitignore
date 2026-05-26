@@ -8,15 +8,6 @@ venv/
 # macOS
 .DS_Store
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# User binaries (keep folder, ignore contents)
+# User binaries
 binaries/*
 !binaries/.gitkeep
-
-# Claude
-.claude/
