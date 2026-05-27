@@ -521,6 +521,8 @@ def api_pipeline_run():
             yield "data: __DONE__\n\n"
         except Exception as exc:
             sys.stdout = old_stdout
+            import traceback
+            traceback.print_exc()
             yield f"data: ERROR: {exc}\n\n"
             yield "data: __DONE__\n\n"
 

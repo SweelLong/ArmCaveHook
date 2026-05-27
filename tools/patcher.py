@@ -18,11 +18,11 @@ def encode_b_cond(imm19: int, cond: int) -> bytes:
 
 
 def encode_cmp_zr(reg: int, is_64bit: bool = True) -> bytes:
-    """CMP Rn, #0  →  SUBS XZR/WZR, Rn, XZR/WZR."""
+    """CMP Rn, #0  →  SUBS XZR/WZR, Rn, #0 (immediate form)."""
     if is_64bit:
-        insn = 0xEB8F801F | (reg << 5)
+        insn = 0xF100001F | (reg << 5)
     else:
-        insn = 0x6B8F801F | (reg << 5)
+        insn = 0x7100001F | (reg << 5)
     return insn.to_bytes(4, "little")
 
 
@@ -42,8 +42,9 @@ def _patch_original_insns(original_bytes: bytes, hook_va: int, cave_original_va:
             if imm26 & 0x2000000:
                 imm26 -= 0x4000000
             target = orig_insn_va + imm26 * 4
-            result += encode_b(cave_cursor, target).to_bytes(4, "little")
-            cave_cursor += 4
+            b_bytes = _encode_branch_safe(cave_cursor, target)
+            result += b_bytes
+            cave_cursor += len(b_bytes)
 
         # ── BL (branch with link) ──
         elif (insn & 0xFC000000) == 0x94000000:
@@ -63,12 +64,12 @@ def _patch_original_insns(original_bytes: bytes, hook_va: int, cave_original_va:
                 imm19 -= 0x80000
             target = orig_insn_va + imm19 * 4
             is_cbnz = (insn >> 24) & 1
-            # Invert: for CBZ (taken if Z=1) skip B if NE; for CBNZ skip if EQ
-            skip_cond = 0 if is_cbnz else 1  # EQ for CBNZ, NE for CBZ
+            skip_cond = 0 if is_cbnz else 1
             result += encode_cmp_zr(rt, bool(sf))
-            result += encode_b_cond(2, skip_cond)        # skip 2 insns (past B)
-            result += encode_b(cave_cursor + 8, target).to_bytes(4, "little")
-            cave_cursor += 12
+            result += encode_b_cond(2, skip_cond)
+            b_bytes = _encode_branch_safe(cave_cursor + 8, target)
+            result += b_bytes
+            cave_cursor += 8 + len(b_bytes)
 
         # ── B.cond (conditional branch) ──
         elif (insn & 0xFF000010) == 0x54000000:
@@ -79,9 +80,10 @@ def _patch_original_insns(original_bytes: bytes, hook_va: int, cave_original_va:
             target = orig_insn_va + imm19 * 4
             inv_cond = cond ^ 1
             if inv_cond <= 13:
-                result += encode_b_cond(1, inv_cond)     # skip 1 insn (B)
-                result += encode_b(cave_cursor + 4, target).to_bytes(4, "little")
-                cave_cursor += 8
+                result += encode_b_cond(1, inv_cond)
+                b_bytes = _encode_branch_safe(cave_cursor + 4, target)
+                result += b_bytes
+                cave_cursor += 4 + len(b_bytes)
             else:
                 result += original_bytes[i:i+4]
                 cave_cursor += 4
@@ -107,6 +109,44 @@ def _patch_original_insns(original_bytes: bytes, hook_va: int, cave_original_va:
             cave_cursor += 4
 
     return bytes(result)
+
+
+SENTINEL_BRANCH = b"\xef\xbe\xad\xde"  # 0xDEADBEEF in little-endian
+
+
+def _decode_branch_target(insn: int, insn_va: int) -> int | None:
+    """Return target VA if insn is a PC-relative branch, else None."""
+    # B (unconditional)
+    if (insn & 0xFC000000) == 0x14000000:
+        imm26 = insn & 0x3FFFFFF
+        if imm26 & 0x2000000:
+            imm26 -= 0x4000000
+        return insn_va + imm26 * 4
+    # BL
+    if (insn & 0xFC000000) == 0x94000000:
+        imm26 = insn & 0x3FFFFFF
+        if imm26 & 0x2000000:
+            imm26 -= 0x4000000
+        return insn_va + imm26 * 4
+    # B.cond
+    if (insn & 0xFF000010) == 0x54000000:
+        imm19 = (insn >> 5) & 0x7FFFF
+        if imm19 & 0x40000:
+            imm19 -= 0x80000
+        return insn_va + imm19 * 4
+    # CBZ / CBNZ
+    if (insn & 0x7E000000) == 0x34000000:
+        imm19 = (insn >> 5) & 0x7FFFF
+        if imm19 & 0x40000:
+            imm19 -= 0x80000
+        return insn_va + imm19 * 4
+    # TBZ / TBNZ
+    if (insn & 0x7E000000) == 0x36000000:
+        imm14 = (insn >> 19) & 0x3FFF
+        if imm14 & 0x2000:
+            imm14 -= 0x4000
+        return insn_va + imm14 * 4
+    return None
 
 
 def _patched_size(original_bytes: bytes) -> int:
@@ -171,6 +211,28 @@ def encode_bl(src_va: int, dst_va: int) -> int:
     return 0x94000000 | (imm26 & 0x03FFFFFF)
 
 
+def _encode_branch_safe(src_va: int, dst_va: int, scratch: int = 16) -> bytes:
+    """Encode B src→dst, falling back to ADRP+ADD+BR if ±128MB is exceeded."""
+    try:
+        return encode_b(src_va, dst_va).to_bytes(4, "little")
+    except ValueError:
+        pass
+    # ADRP Xscratch, page_of(dst)
+    src_page = src_va & ~0xFFF
+    dst_page = dst_va & ~0xFFF
+    page_diff = (dst_page - src_page) >> 12
+    imm21 = page_diff & 0x1FFFFF
+    immlo = imm21 & 0x3
+    immhi = (imm21 >> 2) & 0x7FFFF
+    adrp = 0x90000000 | scratch | (immlo << 29) | (immhi << 5)
+    # ADD Xscratch, Xscratch, #(dst_va & 0xFFF)
+    page_off = dst_va & 0xFFF
+    add = 0x91000000 | scratch | (scratch << 5) | (page_off << 10)
+    # BR Xscratch
+    br = 0xD61F0000 | (scratch << 5)
+    return adrp.to_bytes(4, "little") + add.to_bytes(4, "little") + br.to_bytes(4, "little")
+
+
 @cache
 def _cave_asm():
     lr_save, lr_restore, ret = extract_cave_asm()
@@ -187,6 +249,7 @@ def build_hook_cave(
     plugin_blobs: list,
     target_binary: Path | None = None,
     detour: bool = False,
+    branch_host: bool = False,
 ) -> bytes:
     if not original_bytes or len(original_bytes) % 4:
         raise ValueError("hook window must be a non-empty multiple of 4 bytes")
@@ -196,12 +259,22 @@ def build_hook_cave(
     from .compiler import PluginBlob
 
     n_plugins = len(plugin_blobs)
+    if branch_host and not detour:
+        first_insn = int.from_bytes(original_bytes[:4], 'little')
+        branch_target = _decode_branch_target(first_insn, hook_va)
+        if branch_target is None:
+            raise ValueError("HOOK_BRANCH_HOST requires first instruction to be a PC-relative branch")
+        modified_original = b"\x1f\x20\x03\xd5" + original_bytes[4:]
+    else:
+        modified_original = original_bytes
+        branch_target = None
+
     if detour:
         patched_original = original_bytes
         control_size = 4 + 4 * n_plugins + 4 + 4
     else:
         cave_original_va = cave_va + 4 + 4 * n_plugins + 4
-        patched_original = _patch_original_insns(original_bytes, hook_va, cave_original_va)
+        patched_original = _patch_original_insns(modified_original, hook_va, cave_original_va)
         control_size = 4 + 4 * n_plugins + 4 + len(patched_original) + 4
 
     # Compute plugin offsets and build resolved blobs
@@ -268,7 +341,7 @@ def build_hook_cave(
         out += patched_original
 
         b_back_src = cave_va + 4 + 4 * n_plugins + 4 + len(patched_original)
-        out += encode_b(b_back_src, hook_va + hook_size).to_bytes(4, "little")
+        out += _encode_branch_safe(b_back_src, hook_va + hook_size)
 
     # plugin blobs
     for blob_bytes in resolved_blobs:
@@ -276,6 +349,16 @@ def build_hook_cave(
         pad = (-len(blob_bytes)) % 4
         if pad:
             out += b"\x00" * pad
+
+    if branch_target is not None:
+        idx = 0
+        while True:
+            idx = out.find(SENTINEL_BRANCH, idx)
+            if idx == -1:
+                break
+            b_val = encode_b(cave_va + idx, branch_target)
+            out[idx:idx+4] = b_val.to_bytes(4, "little")
+            idx += 4
 
     return bytes(out)
 
@@ -349,6 +432,7 @@ def patch_hook_macho(
     plugin_blobs: list[bytes],
     seg_name: str,
     detour: bool = False,
+    branch_host: bool = False,
 ) -> tuple[int, int]:
     """Mach-O: add a named segment via LIEF, place the hook cave in it,
     and write the B instruction at the hook point.
@@ -416,7 +500,8 @@ def patch_hook_macho(
     cave_va = new_seg.virtual_address
 
     # ── build the real cave blob with correct VAs ──
-    cave_blob = build_hook_cave(cave_va, new_hook_va, hook_size, original_bytes, plugin_blobs, target_binary=binary_path, detour=detour)
+    hook_va_for_cave = orig_hook_va
+    cave_blob = build_hook_cave(cave_va, hook_va_for_cave, hook_size, original_bytes, plugin_blobs, target_binary=binary_path, detour=detour, branch_host=branch_host)
 
     # ── pass 2: update section content ──
     macho2 = lief.MachO.parse(str(output_path))
@@ -427,21 +512,19 @@ def patch_hook_macho(
     macho2.write(str(output_path))
 
     # ── write B instruction at the new hook point ──
-    final_binary = lief.parse(str(output_path))
-    new_hook_off = final_binary.virtual_address_to_offset(new_hook_va)
-    if not isinstance(new_hook_off, int) or new_hook_off < 0:
-        raise ValueError(f"failed to map hook VA 0x{new_hook_va:x} to file offset")
-
-    hook_b = encode_b(new_hook_va, cave_va)
+    hook_va_for_b = orig_hook_va
+    hook_bytes = _encode_branch_safe(hook_va_for_b, cave_va)
+    if len(hook_bytes) > hook_size:
+        raise ValueError(f"HOOK_SIZE 0x{hook_size:x} too small for long-range branch; need at least 0x{len(hook_bytes):x}")
     data = bytearray(output_path.read_bytes())
-    data[new_hook_off : new_hook_off + 4] = hook_b.to_bytes(4, "little")
-    for pad in range(4, hook_size, 4):
-        data[new_hook_off + pad : new_hook_off + pad + 4] = b"\x1f\x20\x03\xd5"
+    data[hook_file_off : hook_file_off + len(hook_bytes)] = hook_bytes
+    for pad in range(len(hook_bytes), hook_size, 4):
+        data[hook_file_off + pad : hook_file_off + pad + 4] = b"\x1f\x20\x03\xd5"
     output_path.write_bytes(data)
 
     _codesign(output_path)
 
-    return new_hook_va, cave_va
+    return hook_va_for_b, cave_va
 
 
 def patch_hook_window(binary_path: Path, output_path: Path, src_va: int, size: int, dst_va: int) -> None:
@@ -451,10 +534,13 @@ def patch_hook_window(binary_path: Path, output_path: Path, src_va: int, size: i
     if size % 4:
         raise ValueError("hook size must be a multiple of 4")
     off = binary.virtual_address_to_offset(src_va)
-    if off < 0:
+    if not isinstance(off, int) or off < 0:
         raise ValueError(f"failed to map virtual address 0x{src_va:x} to file offset")
+    hook_bytes = _encode_branch_safe(src_va, dst_va)
+    if len(hook_bytes) > size:
+        raise ValueError(f"hook size 0x{size:x} too small for long-range branch; need at least 0x{len(hook_bytes):x}")
     data = bytearray(Path(binary_path).read_bytes())
-    data[off : off + 4] = encode_b(src_va, dst_va).to_bytes(4, "little")
-    for pad in range(4, size, 4):
+    data[off : off + len(hook_bytes)] = hook_bytes
+    for pad in range(len(hook_bytes), size, 4):
         data[off + pad : off + pad + 4] = b"\x1f\x20\x03\xd5"
     Path(output_path).write_bytes(data)

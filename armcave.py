@@ -13,9 +13,14 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="scan and plan only")
     args = parser.parse_args()
 
-    inp = Path(args.input)
-    out = Path(args.output) if args.output else inp.with_suffix(inp.suffix + ".patched")
-    run_pipeline(inp, out, Path(args.plugins), dry_run=args.dry_run)
+    import traceback
+    try:
+        inp = Path(args.input)
+        out = Path(args.output) if args.output else inp.with_suffix(inp.suffix + ".patched")
+        run_pipeline(inp, out, Path(args.plugins), dry_run=args.dry_run)
+    except Exception:
+        traceback.print_exc()
+        return 1
     return 0
 
 

@@ -340,27 +340,30 @@ textarea { resize: vertical; font-family: "SF Mono", "Fira Code", "Cascadia Code
 }
 .code-layer pre, .code-layer textarea {
   position: absolute; inset: 0;
-  margin: 0;
-  padding: 10px 14px;
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 13px; line-height: 1.6;
-  white-space: pre; overflow: auto;
-  tab-size: 4; -moz-tab-size: 4;
-  border: none; outline: none;
+  margin: 0; padding: 10px 14px;
+  font-family: Menlo, "SF Mono", "Fira Code", monospace;
+  font-size: 13px; line-height: 1.5;
+  white-space: pre; tab-size: 4; -moz-tab-size: 4;
+  font-kerning: none; font-variant-ligatures: none;
+  border: none; outline: none; box-sizing: border-box;
 }
 .code-layer pre {
   z-index: 1; color: #d4d4d4;
   background: transparent; pointer-events: none;
+  overflow: hidden;
 }
 .code-layer textarea {
   z-index: 2; color: transparent; caret-color: #fff;
-  background: transparent; resize: none;
   -webkit-text-fill-color: transparent;
+  background: transparent; resize: none; overflow: auto;
+  -webkit-appearance: none;
 }
 .code-layer textarea::selection {
-  background: #264f78;
-  color: #d4d4d4;
-  -webkit-text-fill-color: #d4d4d4;
+  background: rgba(38, 79, 120, 0.4);
+  -webkit-text-fill-color: transparent;
+}
+.code-layer pre::selection {
+  background: rgba(38, 79, 120, 0.4);
 }
 .code-layer pre::-webkit-scrollbar,
 .code-layer textarea::-webkit-scrollbar {

@@ -30,18 +30,28 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
 
     if dry_run:
         for plugin in plugins:
-            hook_addr = f"0x{plugin.hook_file_off:x}" if plugin.hook_file_off is not None else "entrypoint"
-            size_str = f"0x{plugin.size:x}" if plugin.size else "auto"
-            print(
-                f"{plugin.name}: segment={plugin.segment_core} "
-                f"size={size_str} hook={hook_addr} window=0x{plugin.hook_size:x}"
-            )
+            if plugin.hook_file_off is not None:
+                hook_addr = f"0x{plugin.hook_file_off:x}"
+                print(f"{plugin.name}: segment={plugin.segment_core} hook={hook_addr} window=0x{plugin.hook_size:x}")
+            elif plugin.hook_nop_addrs:
+                addrs = ", ".join(f"0x{a:x}" for a in plugin.hook_nop_addrs)
+                print(f"{plugin.name}: NOP {addrs} size=0x{plugin.hook_size:x}")
+            else:
+                print(f"{plugin.name}: standalone segment={plugin.segment_core}")
         return
 
     if not plugins:
         raise RuntimeError("no plugins found")
 
-    standalone = [p for p in plugins if p.hook_file_off is None]
+    # ── validate: BRANCH_GOTO() requires HOOK_BRANCH_HOST 1 ──
+    for p in plugins:
+        src = p.path.read_text(encoding="utf-8", errors="ignore")
+        if "BRANCH_GOTO()" in src and not p.hook_branch_host:
+            raise ValueError(
+                f"{p.name}: BRANCH_GOTO() requires #define HOOK_BRANCH_HOST 1"
+            )
+
+    standalone = [p for p in plugins if p.hook_file_off is None and not p.hook_nop_addrs]
     hook_plugins = [p for p in plugins if p.hook_file_off is not None]
 
     shutil.copyfile(input_path, output_path)
@@ -52,13 +62,20 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
             raise RuntimeError(f"failed to parse {output_path}")
         return b
 
-    # convert file offset to VA
-    for p in hook_plugins:
-        binary = _reparse()
-        va = binary.offset_to_virtual_address(p.hook_file_off)
-        if isinstance(va, int) and va < 0:
-            raise ValueError(f"failed to map file offset 0x{p.hook_file_off:x} to VA for {p.name}")
-        p._hook_va = va
+    # ── NOP: direct instruction NOP ──
+    NOP_BYTES = b"\x1f\x20\x03\xd5"
+    for p in plugins:
+        if not p.hook_nop_addrs:
+            continue
+        nop_size = p.hook_size
+        for off in p.hook_nop_addrs:
+            print(f"[nop] 0x{off:x} size={nop_size}")
+            data = bytearray(output_path.read_bytes())
+            if off + nop_size > len(data):
+                raise ValueError(f"NOP file offset 0x{off:x} out of range")
+            for pos in range(off, off + nop_size, 4):
+                data[pos:pos+4] = NOP_BYTES
+            output_path.write_bytes(data)
 
     # ── standalone: each plugin gets its own segment ──
     for p in standalone:
@@ -71,25 +88,38 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
 
     # ── hook: group by HOOK_ADDR, each group gets one cave ──
     if hook_plugins:
+        # Expand multi-addr plugins into per-address entries
+        hook_entries: list[tuple] = []
+        for p in hook_plugins:
+            binary = _reparse()
+            for off in p.hook_file_offs:
+                va = binary.offset_to_virtual_address(off)
+                if isinstance(va, int) and va < 0:
+                    raise ValueError(f"failed to map file offset 0x{off:x} to VA for {p.name}")
+                hook_entries.append((p, off, va))
+
         from collections import defaultdict
         by_addr: dict[int, list] = defaultdict(list)
-        for p in hook_plugins:
-            by_addr[p._hook_va].append(p)
+        for p, off, va in hook_entries:
+            by_addr[va].append((p, off))
 
         for hook_va, group in by_addr.items():
-            p0 = group[0]
+            p0, off0 = group[0]
             seg = p0.segment_core
-            hook_size = max(p.hook_size for p in group)
-            hook_off = p0.hook_file_off
-            detour = any(p.detour for p in group)
+            hook_size = max(p0.hook_size for p0, _ in group)
+            hook_off = off0
+            detour = any(p0.detour for p0, _ in group)
+            branch_host = any(p0.hook_branch_host for p0, _ in group)
 
             binary = _reparse()
             original_insn = bytes(binary.get_content_from_virtual_address(hook_va, hook_size))
             mode = "DETOUR" if detour else "INLINE"
+            if branch_host:
+                mode += " BRANCH_HOST"
             print(f"[hook] 0x{hook_va:x} (file off 0x{hook_off:x}) window={hook_size} bytes, segment={seg}, mode={mode}")
 
             plugin_blobs = []
-            for p in group:
+            for p, off in group:
                 blob = compile_plugin(p.path, target_binary=input_path)
                 blob.register_args = p.register_args
                 plugin_blobs.append(blob)
@@ -99,6 +129,7 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
                 hook_va, cave_va = patch_hook_macho(
                     output_path, output_path, hook_off, hook_size,
                     original_insn, plugin_blobs, seg_name=seg, detour=detour,
+                    branch_host=branch_host,
                 )
             else:
                 from .patcher import _patched_size
@@ -119,7 +150,7 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
                 binary = _reparse()
                 cave_va = seg_va(binary, seg, cave_size)
 
-                cave_blob = build_hook_cave(cave_va, hook_va, hook_size, original_insn, plugin_blobs, detour=detour)
+                cave_blob = build_hook_cave(cave_va, hook_va, hook_size, original_insn, plugin_blobs, detour=detour, branch_host=branch_host)
                 add_segment(output_path, SegmentPlan(seg, len(cave_blob), cave_blob), output_path)
 
                 binary = _reparse()

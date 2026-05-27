@@ -110,3 +110,10 @@ static const unsigned char _cave_asm_data[] = {
     0xfd, 0x7b, 0xc1, 0xa8,
     0xc0, 0x03, 0x5f, 0xd6,
 };
+
+#define BRANCH_GOTO()  __asm__ volatile( \
+    "mov sp, x29\n" \
+    "ldp x29, x30, [sp], #0x10\n" \
+    "add sp, sp, #0x10\n" \
+    ".word 0xDEADBEEF\n" \
+    ::: "memory")

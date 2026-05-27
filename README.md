@@ -117,6 +117,24 @@ static int detour_entry(int arg0) {
 }
 ```
 
+### Branch Host 插件
+
+```c
+#define SEGMENT_NAME branch_test
+#define HOOK_ADDR 0x123456       // 此处是一条 CBZ/B.cond/B.NE 等分支指令
+#define HOOK_BRANCH_HOST 1       // 启用分支托管
+#define REGISTER_ARGS w0, x19
+
+__attribute__((used))
+static void handler(int w0, void *x19) {
+    if (w0 >= 5) {
+        // 改写字符串后续逻辑...
+        BRANCH_GOTO();  // 跳回原始分支目标地址（PC 相对，ASLR 安全）
+    }
+    // 不调 BRANCH_GOTO() → 不跳转，继续执行 Cave 后续指令
+}
+```
+
 宏说明：
 
 | 宏 | 必填 | 说明 |
@@ -127,8 +145,44 @@ static int detour_entry(int arg0) {
 | `SEGMENT_SIZE` | 否 | 手动指定段大小（不填则自动根据编译后机器码体积计算） |
 | `HOOK_DETOUR` | 否 | 设为 `1` 启用 Detour 模式，执行后不再回放原指令或跳回（默认 Inline） |
 | `REGISTER_ARGS` | 否 | 指定参数绑定的寄存器列表（如 `x20, x19`），插件函数参数 `arg0` 自动绑定 `x20`、`arg1` 绑定 `x19`，框架生成 MOV 包装器 |
+| `HOOK_BRANCH_HOST` | 否 | 设为 `1` 启用分支托管模式，Hook 点首条分支指令被 NOP，插件通过 `BRANCH_GOTO()` 宏手动控制跳转 |
+| `HOOK_NOP` | 否 | 直接 NOP 掉指定地址的指令，值为文件偏移（如 `0xA9B358, 0xA9B35C`），配合 `HOOK_SIZE` 指定 NOP 长度 |
 
 > 不填 `SEGMENT_SIZE` 时，pipeline 根据 clang 编译后的机器码体积 + 跳转控制开销自动计算，全程零手工。
+
+### IDA Pro 伪代码到 C 类型对照
+
+逆向中最常见的任务是将 IDA 反编译的伪代码转为 ArmCaveHook 插件代码。核心原则：**IDA 伪代码中 `ptr + N` 永远是字节偏移**，要用 `(char*)` 做指针运算，再 cast 到目标类型。
+
+| IDA 伪代码类型 | 位宽 | C 类型 | 解引用示例 |
+|---|---|---|---|
+| `_BYTE` | 8 bit | `char` / `uint8_t` | `*(char*)((char*)ptr + 0xN)` |
+| `_WORD` | 16 bit | `short` / `uint16_t` | `*(short*)((char*)ptr + 0xN)` |
+| `_DWORD` | 32 bit | `int` / `uint32_t` | `*(int*)((char*)ptr + 0xN)` |
+| `_QWORD` | 64 bit | `long long` / `uint64_t` / `void*` | `*(long long*)((char*)ptr + 0xN)` |
+
+**错误示例：**
+```c
+// IDA: v1 = *(_DWORD *)(x0 + 0x110)
+// ❌ (int*)x0 + 0x110 是 int 指针运算 = x0 + 0x110 * 4 = x0 + 0x440
+int v9 = *(int*)((int*)x0 + 0x110);
+```
+
+**正确写法：**
+```c
+// ✅ char* 指针运算，字节偏移 0x110
+int v9 = *(int*)((char*)x0 + 0x110);
+
+// 等于 IDA 的: v1 = *(_DWORD *)(x0 + 0x110)
+// 等于原始指令: LDR W0, [X0, #0x110]
+```
+
+**REGISTER_ARGS 寄存器类型速查：**
+
+| 寄存器 | 位宽 | C 类型 | 说明 |
+|---|---|---|---|
+| `w0`-`w30` | 32 bit | `int` / `uint32_t` | 32 位寄存器，不涉及指针 |
+| `x0`-`x30` | 64 bit | `void*` / `uint64_t` | 64 位寄存器，可能是指针或数值 |
 
 ## 用法
 

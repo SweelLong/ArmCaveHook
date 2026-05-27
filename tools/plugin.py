@@ -31,7 +31,17 @@ class PluginSpec:
     @property
     def hook_file_off(self) -> int | None:
         raw = self.defines.get("HOOK_ADDR")
-        return int(raw, 0) if raw is not None else None
+        if raw is None:
+            return None
+        return int(raw.split(",")[0].strip(), 0)
+
+    @property
+    def hook_file_offs(self) -> list[int]:
+        """Return all hook file offsets (supports comma-separated HOOK_ADDR)."""
+        raw = self.defines.get("HOOK_ADDR")
+        if raw is None:
+            return []
+        return [int(p.strip(), 0) for p in raw.split(",") if p.strip()]
 
     @property
     def hook_size(self) -> int:
@@ -42,6 +52,18 @@ class PluginSpec:
     def detour(self) -> bool:
         raw = self.defines.get("HOOK_DETOUR")
         return raw is not None and int(raw, 0) != 0
+
+    @property
+    def hook_branch_host(self) -> bool:
+        raw = self.defines.get("HOOK_BRANCH_HOST")
+        return raw is not None and int(raw, 0) != 0
+
+    @property
+    def hook_nop_addrs(self) -> list[int]:
+        raw = self.defines.get("HOOK_NOP")
+        if raw is None:
+            return []
+        return [int(p.strip(), 0) for p in raw.split(",") if p.strip()]
 
     @property
     def register_args(self) -> Optional[list[str]]:
