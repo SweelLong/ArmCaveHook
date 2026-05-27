@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import subprocess
+from functools import cache
 from pathlib import Path
 
 import lief
+
+from .compiler import extract_cave_asm
 
 
 def encode_b(src_va: int, dst_va: int) -> int:
@@ -26,9 +29,12 @@ def encode_bl(src_va: int, dst_va: int) -> int:
     return 0x94000000 | (imm26 & 0x03FFFFFF)
 
 
-LR_SAVE = b"\xfd\x7b\xbf\xa9"       # stp x29, x30, [sp, #-16]!
-LR_RESTORE = b"\xfd\x7b\xc1\xa8"    # ldp x29, x30, [sp], #16
-RET = b"\xc0\x03\x5f\xd6"           # ret
+@cache
+def _cave_asm():
+    lr_save, lr_restore, ret = extract_cave_asm()
+    return lr_save, lr_restore, ret
+
+LR_SAVE, LR_RESTORE, RET = _cave_asm()
 
 
 def build_hook_cave(

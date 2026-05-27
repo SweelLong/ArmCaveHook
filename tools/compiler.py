@@ -51,6 +51,30 @@ class PluginBlob:
         return bytes(result)
 
 
+def extract_cave_asm() -> tuple[bytes, bytes, bytes]:
+    plugins_dir = PROJECT_ROOT / "plugins"
+    with tempfile.TemporaryDirectory(prefix="armcave-") as td:
+        src = Path(td) / "_cave_extract.c"
+        src.write_text('#include "armcave.h"\n')
+        out = Path(td) / "_cave_extract.o"
+        subprocess.run(
+            ["clang", "-target", "arm64-apple-macosx13.0", "-c", "-Oz",
+             "-fno-stack-protector", "-I", str(plugins_dir),
+             str(src), "-o", str(out)],
+            check=True, capture_output=True,
+        )
+        obj = lief.parse(str(out))
+        if obj is None:
+            raise RuntimeError("failed to parse cave asm object")
+        sec = next((s for s in obj.sections if s.name == "__caveasm"), None)
+        if sec is None:
+            raise RuntimeError("__caveasm section not found in compiled output")
+        data = bytes(sec.content)
+        if len(data) < 12:
+            raise RuntimeError(f"__caveasm section too small: {len(data)} bytes")
+        return data[0:4], data[4:8], data[8:12]
+
+
 def compile_plugin(path: Path, target_binary: Path | None = None) -> PluginBlob:
     with tempfile.TemporaryDirectory(prefix="armcave-") as td:
         out = Path(td) / f"{path.stem}.o"

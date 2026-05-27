@@ -119,6 +119,17 @@ T = {
         "edit_plugin": "Edit Plugin",
         "enable": "Enable",
         "priority": "Priority",
+        "validation_seg_name_required": "#define SEGMENT_NAME is required",
+        "validation_seg_name_invalid": "SEGMENT_NAME must be a valid identifier",
+        "validation_seg_size_invalid": "SEGMENT_SIZE must be a valid integer",
+        "validation_seg_size_positive": "SEGMENT_SIZE must be positive",
+        "validation_hook_addr_invalid": "HOOK_ADDR must be a valid hex address",
+        "validation_hook_size_invalid": "HOOK_SIZE must be a valid integer",
+        "validation_hook_size_aligned": "HOOK_SIZE must be 4-byte aligned",
+        "validation_plugin_name_required": "plugin name is required",
+        "validation_plugin_name_invalid": "invalid plugin filename",
+        "validation_plugin_exists": "plugin '{name}' already exists",
+        "validation_plugin_not_found": "plugin not found",
         "segment_conflict_error": "SEGMENT_NAME '{seg}' is already used by '{other}'. Each plugin must use a unique segment name.",
         "segment_conflict_warn": "Segment '{seg}' is also used by '{other}'",
         "available_symbols": "Available Symbols",
@@ -200,6 +211,17 @@ T = {
         "edit_plugin": "编辑插件",
         "enable": "启用",
         "priority": "优先级",
+        "validation_seg_name_required": "#define SEGMENT_NAME 是必填项",
+        "validation_seg_name_invalid": "SEGMENT_NAME 必须是有效的标识符",
+        "validation_seg_size_invalid": "SEGMENT_SIZE 必须是有效整数",
+        "validation_seg_size_positive": "SEGMENT_SIZE 必须为正数",
+        "validation_hook_addr_invalid": "HOOK_ADDR 必须是有效的十六进制地址",
+        "validation_hook_size_invalid": "HOOK_SIZE 必须是有效整数",
+        "validation_hook_size_aligned": "HOOK_SIZE 必须 4 字节对齐",
+        "validation_plugin_name_required": "插件文件名不能为空",
+        "validation_plugin_name_invalid": "无效的插件文件名",
+        "validation_plugin_exists": "插件 '{name}' 已存在",
+        "validation_plugin_not_found": "插件未找到",
         "segment_conflict_error": "SEGMENT_NAME '{seg}' 已被 '{other}' 使用，不同插件必须使用不同的段名。",
         "segment_conflict_warn": "段名 '{seg}' 也被 '{other}' 使用",
         "available_symbols": "可用符号",
@@ -289,31 +311,31 @@ def _validate_plugin_source(source: str) -> list[str]:
             defines[m.group(1)] = m.group(2).split("//", 1)[0].strip()
 
     if "SEGMENT_NAME" not in defines:
-        errors.append("#define SEGMENT_NAME is required")
+        errors.append(t("validation_seg_name_required"))
     elif not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", defines["SEGMENT_NAME"]):
-        errors.append("SEGMENT_NAME must be a valid identifier")
+        errors.append(t("validation_seg_name_invalid"))
 
     if "SEGMENT_SIZE" in defines:
         try:
             val = int(defines["SEGMENT_SIZE"], 0)
             if val <= 0:
-                errors.append("SEGMENT_SIZE must be positive")
+                errors.append(t("validation_seg_size_positive"))
         except ValueError:
-            errors.append("SEGMENT_SIZE must be a valid integer")
+            errors.append(t("validation_seg_size_invalid"))
 
     if "HOOK_ADDR" in defines:
         try:
             int(defines["HOOK_ADDR"], 0)
         except ValueError:
-            errors.append("HOOK_ADDR must be a valid hex address")
+            errors.append(t("validation_hook_addr_invalid"))
 
     if "HOOK_SIZE" in defines:
         try:
             val = int(defines["HOOK_SIZE"], 0)
             if val % 4 != 0:
-                errors.append("HOOK_SIZE must be 4-byte aligned")
+                errors.append(t("validation_hook_size_aligned"))
         except ValueError:
-            errors.append("HOOK_SIZE must be a valid integer")
+            errors.append(t("validation_hook_size_invalid"))
 
     return errors
 
@@ -373,17 +395,16 @@ def api_plugin_create():
     content = (data.get("content") or "").strip()
 
     if not name:
-        return jsonify({"error": "plugin name is required"}), 400
+        return jsonify({"error": t("validation_plugin_name_required")}), 400
     if not name.endswith(".c"):
         name += ".c"
     if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*\.c$", name):
-        return jsonify({"error": "invalid plugin filename"}), 400
+        return jsonify({"error": t("validation_plugin_name_invalid")}), 400
 
     errors = _validate_plugin_source(content)
     if errors:
         return jsonify({"error": "\n".join(errors)}), 400
 
-    # segment conflict check
     new_seg = _extract_segment_name(content)
     if new_seg:
         conflict = _check_segment_conflict(new_seg)
@@ -392,7 +413,7 @@ def api_plugin_create():
 
     path = PLUGINS_DIR / name
     if path.exists():
-        return jsonify({"error": f"plugin '{name}' already exists"}), 409
+        return jsonify({"error": t("validation_plugin_exists").format(name=name)}), 409
 
     PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(content + "\n", encoding="utf-8")
@@ -407,24 +428,22 @@ def api_plugin_update(name: str):
 
     path = PLUGINS_DIR / name
     if not path.exists():
-        return jsonify({"error": "plugin not found"}), 404
+        return jsonify({"error": t("validation_plugin_not_found")}), 404
 
     errors = _validate_plugin_source(content)
     if errors:
         return jsonify({"error": "\n".join(errors)}), 400
 
-    # segment conflict check (exclude self)
     new_seg = _extract_segment_name(content)
     if new_seg:
         conflict = _check_segment_conflict(new_seg, current_name=name)
         if conflict:
             return jsonify({"error": t("segment_conflict_error").format(seg=new_seg, other=conflict)}), 409
 
-    # handle rename
     if new_name and new_name != name:
         new_path = PLUGINS_DIR / new_name
         if new_path.exists():
-            return jsonify({"error": f"plugin '{new_name}' already exists"}), 409
+            return jsonify({"error": t("validation_plugin_exists").format(name=new_name)}), 409
         path.rename(new_path)
         path = new_path
 
