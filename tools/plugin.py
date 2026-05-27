@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 import re
 
 
@@ -41,6 +42,17 @@ class PluginSpec:
     def detour(self) -> bool:
         raw = self.defines.get("HOOK_DETOUR")
         return raw is not None and int(raw, 0) != 0
+
+    @property
+    def register_args(self) -> Optional[list[str]]:
+        raw = self.defines.get("REGISTER_ARGS")
+        if raw is None:
+            return None
+        regs = [r.strip().lower() for r in raw.split(",")]
+        for r in regs:
+            if not r or (r[0] not in ("x", "w") or not r[1:].isdigit()):
+                raise ValueError(f"Invalid register name in REGISTER_ARGS: {r}")
+        return regs
 
 
 def load_plugin(path: Path) -> PluginSpec:

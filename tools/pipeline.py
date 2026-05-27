@@ -91,6 +91,7 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
             plugin_blobs = []
             for p in group:
                 blob = compile_plugin(p.path, target_binary=input_path)
+                blob.register_args = p.register_args
                 plugin_blobs.append(blob)
                 print(f"  {p.name}: {blob.total_bytes} bytes")
 
@@ -100,12 +101,19 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
                     original_insn, plugin_blobs, seg_name=seg, detour=detour,
                 )
             else:
+                from .patcher import _patched_size
                 if detour:
-                    control_overhead = 4 * len(plugin_blobs) + 4 + 4
+                    control_overhead = 4 + 4 * len(plugin_blobs) + 4 + 4
                 else:
-                    control_overhead = 4 * len(plugin_blobs) + len(original_insn) + 4
+                    control_overhead = 4 + 4 * len(plugin_blobs) + 4 + _patched_size(original_insn) + 4
+                from .compiler import PluginBlob
                 aligned_blobs_size = sum((len(b) + 3) & ~3 for b in plugin_blobs)
-                cave_size = control_overhead + aligned_blobs_size
+                wrapper_overhead = sum(
+                    4 * len(b.register_args) + 4
+                    for b in plugin_blobs
+                    if isinstance(b, PluginBlob) and b.register_args
+                )
+                cave_size = control_overhead + aligned_blobs_size + wrapper_overhead
 
                 add_segment(output_path, SegmentPlan(seg, cave_size, b""), output_path)
                 binary = _reparse()

@@ -126,6 +126,7 @@ static int detour_entry(int arg0) {
 | `HOOK_SIZE` | 否 | Hook 跳转窗口大小（不填默认 `0x4`，4 字节对齐） |
 | `SEGMENT_SIZE` | 否 | 手动指定段大小（不填则自动根据编译后机器码体积计算） |
 | `HOOK_DETOUR` | 否 | 设为 `1` 启用 Detour 模式，执行后不再回放原指令或跳回（默认 Inline） |
+| `REGISTER_ARGS` | 否 | 指定参数绑定的寄存器列表（如 `x20, x19`），插件函数参数 `arg0` 自动绑定 `x20`、`arg1` 绑定 `x19`，框架生成 MOV 包装器 |
 
 > 不填 `SEGMENT_SIZE` 时，pipeline 根据 clang 编译后的机器码体积 + 跳转控制开销自动计算，全程零手工。
 
