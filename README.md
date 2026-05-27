@@ -19,13 +19,16 @@ ArmCaveHook 是一个面向 ARM64 平台的静态二进制插桩框架。与传�
 
 **工作方式：** 框架读取已编译的 Mach-O / ELF 二进制，在目标地址处将原始指令替换为无条件跳转（B 指令），跳入框架自动新增的 Code Cave 代码段。Cave 内依次调用用户编写的 C 插件函数，执行完毕后可选择恢复原始指令跳回（Inline Hook）或直接返回调用者（Detour Hook）。
 
-**三种注入模式：**
+**注入模式与修饰器：**
 
-| 模式 | HOOK_ADDR | 行为 |
+| 模式 | 所需宏 | 行为 |
 |---|---|---|
-| Code Injection | 不定义 | 只将 C 代码编译为机器码，并注入到新增段 |
-| Inline Hook | 指令地址 | 打断原指令 → 跳入新增段 → 执行插件 → 恢复原指令并跳回 |
-| Detour Hook | 函数地址 + `HOOK_DETOUR 1` | 打断原函数 → 跳入新增段 → 调用插件 |
+| Code Injection | 仅 `SEGMENT_NAME` | 只将 C 代码编译为机器码，注入到新增段，不修改原程序 |
+| Inline Hook | `HOOK_ADDR` | 打断原指令 → 跳入 Cave → 执行插件 → 恢复原指令并跳回 |
+| Detour Hook | `HOOK_ADDR` + `HOOK_DETOUR 1` | 打断原指令 → 跳入 Cave → 执行插件 → 不恢复，不回跳 |
+| Branch Host | 加 `HOOK_BRANCH_HOST 1` | **修饰器**，Hook 点首条指令是分支时 NOP 分支而非普通指令，插件通过 `BRANCH_GOTO()` 控制是否跳转 |
+
+> Branch Host 不是独立模式，是叠加在 Inline/Detour 上的修饰器。`BRANCH_GOTO()` 后的行为取决于 `HOOK_DETOUR`：未开启则指令恢复并跳回；开启则不恢复、不回跳。
 
 **适用场景：** iOS/Android 逆向分析、游戏修改、安全研究、二进制插桩教学。由于修改是静态的，修改后的二进制可直接分发，目标设备无需越狱/Root 或安装任何框架。
 
@@ -70,7 +73,8 @@ ArmCaveHook/
 │   └── symbols.py          # 符号表解析与重定位
 ├── plugins/
 │   ├── armcave.h           # 内置头文件（自动包含）
-│   └── hello_inline.c      # Inline Hook 示例
+│   ├── rating_str.c        # Hook 示例：替换难度评星字符串
+│   └── rating_unicode.c    # Hook 示例：Unicode codepoint → UTF-8 编码
 ├── binaries/               # 目标二进制文件存放目录
 ├── static/                 # Web UI 静态资源 (CSS/JS)
 └── templates/              # Web UI Jinja2 模板
@@ -126,12 +130,13 @@ static int detour_entry(int arg0) {
 #define REGISTER_ARGS w0, x19
 
 __attribute__((used))
-static void handler(int w0, void *x19) {
+static void handler(int w0, void* x19) {
     if (w0 >= 5) {
         // 改写字符串后续逻辑...
-        BRANCH_GOTO();  // 跳回原始分支目标地址（PC 相对，ASLR 安全）
+        BRANCH_GOTO();  // 跳回原始分支目标地址
     }
-    // 不调 BRANCH_GOTO() → 不跳转，继续执行 Cave 后续指令
+    // 不调 BRANCH_GOTO() → 分支不成立，继续执行 Cave → 恢复原指令并跳回
+    // 若同时开启了 HOOK_DETOUR，BRANCH_GOTO() 跳转后 Cave 结束，不恢复不回跳
 }
 ```
 
@@ -149,6 +154,20 @@ static void handler(int w0, void *x19) {
 | `HOOK_NOP` | 否 | 直接 NOP 掉指定地址的指令，值为文件偏移（如 `0xA9B358, 0xA9B35C`），配合 `HOOK_SIZE` 指定 NOP 长度 |
 
 > 不填 `SEGMENT_SIZE` 时，pipeline 根据 clang 编译后的机器码体积 + 跳转控制开销自动计算，全程零手工。
+
+### 重要：`static` 关键字
+
+**所有插件函数必须加 `static`**。不加 `static` 时编译器将函数名导出为全局符号，导致 `__TEXT` 段出现指向插件函数的外部引用，重定位时框架会误解析为跨模块调用而报错。
+
+### BRANCH_GOTO 栈约束
+
+`BRANCH_GOTO()` 通过暴力修改 SP 跳回原始分支目标，要求插件函数满足：
+
+- **不能有额外的栈上局部变量**（除了函数参数本身）
+- 编译器(clang)生成的帧必须是标准 `stp x29, x30, [sp, #-0x10]!`
+- 如果函数有额外局部变量（超过参数个数），编译器会分配更大栈帧，BRANCH_GOTO 的 SP 修正会算错导致 crash
+
+需要额外局部变量时：改用 `static` 局部变量存储在数据段，不占用栈空间。
 
 ### IDA Pro 伪代码到 C 类型对照
 
