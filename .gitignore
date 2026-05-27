@@ -8,6 +8,8 @@ venv/
 # macOS
 .DS_Store
 
-# User binaries
+# User
 binaries/*
 !binaries/.gitkeep
+plugins/*
+!plugins/armcave.h
