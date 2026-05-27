@@ -18,6 +18,8 @@ class PluginBlob:
     _relocs: list[dict] = field(default_factory=list)
     # Section map: name -> offset in extra (for local reloc patching)
     _section_offsets: dict[str, int] = field(default_factory=dict)
+    # Optional register-to-argument mapping (e.g. ["x20", "x19"])
+    register_args: list[str] | None = None
 
     @property
     def total_bytes(self) -> int:

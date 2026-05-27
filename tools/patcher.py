@@ -9,6 +9,148 @@ import lief
 from .compiler import extract_cave_asm
 
 
+def encode_b_cond(imm19: int, cond: int) -> bytes:
+    """Encode B.cond with signed 19-bit offset (in instructions, *4 for bytes)."""
+    if imm19 < 0:
+        imm19 += 0x80000
+    insn = 0x54000000 | ((imm19 & 0x7FFFF) << 5) | (cond & 0xF)
+    return insn.to_bytes(4, "little")
+
+
+def encode_cmp_zr(reg: int, is_64bit: bool = True) -> bytes:
+    """CMP Rn, #0  →  SUBS XZR/WZR, Rn, XZR/WZR."""
+    if is_64bit:
+        insn = 0xEB8F801F | (reg << 5)
+    else:
+        insn = 0x6B8F801F | (reg << 5)
+    return insn.to_bytes(4, "little")
+
+
+def _patch_original_insns(original_bytes: bytes, hook_va: int, cave_original_va: int) -> bytes:
+    """Replace PC-relative branch instructions so they work from the cave."""
+    result = bytearray()
+    cave_cursor = cave_original_va
+    NBIT = 1 << 31
+
+    for i in range(0, len(original_bytes), 4):
+        insn = int.from_bytes(original_bytes[i:i+4], 'little')
+        orig_insn_va = hook_va + i
+
+        # ── B (unconditional) ──
+        if (insn & 0xFC000000) == 0x14000000:
+            imm26 = insn & 0x3FFFFFF
+            if imm26 & 0x2000000:
+                imm26 -= 0x4000000
+            target = orig_insn_va + imm26 * 4
+            result += encode_b(cave_cursor, target).to_bytes(4, "little")
+            cave_cursor += 4
+
+        # ── BL (branch with link) ──
+        elif (insn & 0xFC000000) == 0x94000000:
+            imm26 = insn & 0x3FFFFFF
+            if imm26 & 0x2000000:
+                imm26 -= 0x4000000
+            target = orig_insn_va + imm26 * 4
+            result += encode_bl(cave_cursor, target).to_bytes(4, "little")
+            cave_cursor += 4
+
+        # ── CBZ / CBNZ ──
+        elif (insn & 0x7E000000) == 0x34000000:
+            sf = (insn >> 31) & 1
+            rt = insn & 0x1F
+            imm19 = (insn >> 5) & 0x7FFFF
+            if imm19 & 0x40000:
+                imm19 -= 0x80000
+            target = orig_insn_va + imm19 * 4
+            is_cbnz = (insn >> 24) & 1
+            # Invert: for CBZ (taken if Z=1) skip B if NE; for CBNZ skip if EQ
+            skip_cond = 0 if is_cbnz else 1  # EQ for CBNZ, NE for CBZ
+            result += encode_cmp_zr(rt, bool(sf))
+            result += encode_b_cond(2, skip_cond)        # skip 2 insns (past B)
+            result += encode_b(cave_cursor + 8, target).to_bytes(4, "little")
+            cave_cursor += 12
+
+        # ── B.cond (conditional branch) ──
+        elif (insn & 0xFF000010) == 0x54000000:
+            cond = insn & 0xF
+            imm19 = (insn >> 5) & 0x7FFFF
+            if imm19 & 0x40000:
+                imm19 -= 0x80000
+            target = orig_insn_va + imm19 * 4
+            inv_cond = cond ^ 1
+            if inv_cond <= 13:
+                result += encode_b_cond(1, inv_cond)     # skip 1 insn (B)
+                result += encode_b(cave_cursor + 4, target).to_bytes(4, "little")
+                cave_cursor += 8
+            else:
+                result += original_bytes[i:i+4]
+                cave_cursor += 4
+
+        # ── TBZ / TBNZ ──
+        elif (insn & 0x7E000000) == 0x36000000:
+            imm14 = (insn >> 19) & 0x3FFF
+            if imm14 & 0x2000:
+                imm14 -= 0x4000
+            target = orig_insn_va + imm14 * 4
+            rt = insn & 0x1F
+            bit_pos = ((insn >> 26) & 0x1F) | ((insn >> 1) & 0x20)
+            is_tbnz = (insn >> 24) & 1
+            # Replace: TBZ Xt, #bit, label with:
+            #   TST Xt, #(1 << bit)  (no direct encoding, use AND/UBFX instead)
+            # Simpler: use LSL + TST approach or just skip
+            # For now, just copy as-is (same limitation as original)
+            result += original_bytes[i:i+4]
+            cave_cursor += 4
+
+        else:
+            result += original_bytes[i:i+4]
+            cave_cursor += 4
+
+    return bytes(result)
+
+
+def _patched_size(original_bytes: bytes) -> int:
+    """Return the byte-size after _patch_original_insns expansion."""
+    size = 0
+    for i in range(0, len(original_bytes), 4):
+        insn = int.from_bytes(original_bytes[i:i+4], 'little')
+        if (insn & 0x7E000000) == 0x34000000:        # CBZ/CBNZ → 12 B
+            size += 12
+        elif (insn & 0xFF000010) == 0x54000000:      # B.cond  → 8 B
+            size += 8
+        else:                                          # no expansion
+            size += 4
+    return size
+
+
+def encode_mov(rd: int, rm: int, is_64bit: bool = True) -> bytes:
+    """Encode MOV Xd, Xm (ORR Xd, XZR, Xm) or MOV Wd, Wm (ORR Wd, WZR, Wm)."""
+    if is_64bit:
+        insn = 0xAA0003E0 | (rm << 16) | rd
+    else:
+        insn = 0x2A0003E0 | (rm << 16) | rd
+    return insn.to_bytes(4, "little")
+
+
+def _parse_reg_name(name: str) -> tuple[int, bool]:
+    name = name.strip().lower()
+    if name.startswith("x"):
+        return int(name[1:]), True
+    elif name.startswith("w"):
+        return int(name[1:]), False
+    raise ValueError(f"invalid register name: {name}")
+
+
+def generate_param_wrapper(param_regs: list[str], wrapper_va: int, plugin_va: int) -> bytes:
+    out = bytearray()
+    for i, reg_name in enumerate(param_regs[:8]):
+        reg_num, is_64bit = _parse_reg_name(reg_name)
+        out += encode_mov(i, reg_num, is_64bit)
+    b_off = len(out)
+    out += encode_b(wrapper_va + b_off, plugin_va).to_bytes(4, "little")
+    return bytes(out)
+
+
 def encode_b(src_va: int, dst_va: int) -> int:
     delta = dst_va - src_va
     if delta % 4:
@@ -55,11 +197,12 @@ def build_hook_cave(
 
     n_plugins = len(plugin_blobs)
     if detour:
-        # layout: stp | BL*N | ldp | ret
+        patched_original = original_bytes
         control_size = 4 + 4 * n_plugins + 4 + 4
     else:
-        # layout: stp | BL*N | ldp | original | B
-        control_size = 4 + 4 * n_plugins + 4 + len(original_bytes) + 4
+        cave_original_va = cave_va + 4 + 4 * n_plugins + 4
+        patched_original = _patch_original_insns(original_bytes, hook_va, cave_original_va)
+        control_size = 4 + 4 * n_plugins + 4 + len(patched_original) + 4
 
     # Compute plugin offsets and build resolved blobs
     plugin_offsets: list[int] = []
@@ -67,18 +210,41 @@ def build_hook_cave(
     cursor = control_size
     for blob in plugin_blobs:
         cursor = (cursor + 3) & ~3
-        plugin_offsets.append(cursor)
 
-        if isinstance(blob, PluginBlob):
-            text_va = cave_va + cursor
+        register_args = blob.register_args if isinstance(blob, PluginBlob) else None
+
+        if register_args:
+            wrapper_size = 4 * len(register_args) + 4
+            wrapper_off = cursor
+            cursor += wrapper_size
+            cursor = (cursor + 3) & ~3
+            plugin_off = cursor
+
+            plugin_offsets.append(wrapper_off)
+
+            text_va = cave_va + plugin_off
             aligned_text_size = (len(blob.text) + 15) & ~15
             data_va = text_va + aligned_text_size
             built = blob.build(text_va, data_va, target_binary)
+
+            wrapper = generate_param_wrapper(
+                register_args, cave_va + wrapper_off, cave_va + plugin_off,
+            )
+            resolved_blobs.append(wrapper)
             resolved_blobs.append(built)
-            cursor += len(built)
+            cursor = plugin_off + len(built)
         else:
-            resolved_blobs.append(blob)
-            cursor += len(blob)
+            plugin_offsets.append(cursor)
+            if isinstance(blob, PluginBlob):
+                text_va = cave_va + cursor
+                aligned_text_size = (len(blob.text) + 15) & ~15
+                data_va = text_va + aligned_text_size
+                built = blob.build(text_va, data_va, target_binary)
+                resolved_blobs.append(built)
+                cursor += len(built)
+            else:
+                resolved_blobs.append(blob)
+                cursor += len(blob)
 
         cursor = (cursor + 3) & ~3
 
@@ -99,11 +265,9 @@ def build_hook_cave(
     if detour:
         out += RET
     else:
-        # original instruction
-        out += original_bytes
+        out += patched_original
 
-        # B back to hook_va + hook_size
-        b_back_src = cave_va + 4 + 4 * n_plugins + 4 + len(original_bytes)
+        b_back_src = cave_va + 4 + 4 * n_plugins + 4 + len(patched_original)
         out += encode_b(b_back_src, hook_va + hook_size).to_bytes(4, "little")
 
     # plugin blobs
@@ -214,10 +378,14 @@ def patch_hook_macho(
     if detour:
         control_size = 4 + 4 * n_plugins + 4 + 4
     else:
-        control_size = 4 + 4 * n_plugins + 4 + len(original_bytes) + 4
+        control_size = 4 + 4 * n_plugins + 4 + _patched_size(original_bytes) + 4
     payload_size = sum(
         (b.total_bytes if isinstance(b, PluginBlob) else len(b)) for b in plugin_blobs
     )
+    # Add wrapper overhead for register-args plugins
+    for b in plugin_blobs:
+        if isinstance(b, PluginBlob) and b.register_args:
+            payload_size += 4 * len(b.register_args) + 4
     cave_size = control_size + payload_size
 
     _macho_add_segment(binary, seg_name, b"\x00" * cave_size)
