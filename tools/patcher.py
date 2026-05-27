@@ -28,6 +28,7 @@ def encode_bl(src_va: int, dst_va: int) -> int:
 
 LR_SAVE = b"\xfd\x7b\xbf\xa9"       # stp x29, x30, [sp, #-16]!
 LR_RESTORE = b"\xfd\x7b\xc1\xa8"    # ldp x29, x30, [sp], #16
+RET = b"\xc0\x03\x5f\xd6"           # ret
 
 
 def build_hook_cave(
@@ -37,6 +38,7 @@ def build_hook_cave(
     original_bytes: bytes,
     plugin_blobs: list,
     target_binary: Path | None = None,
+    detour: bool = False,
 ) -> bytes:
     if not original_bytes or len(original_bytes) % 4:
         raise ValueError("hook window must be a non-empty multiple of 4 bytes")
@@ -46,8 +48,12 @@ def build_hook_cave(
     from .compiler import PluginBlob
 
     n_plugins = len(plugin_blobs)
-    # layout: stp | BL*N | ldp | original | B
-    control_size = 4 + 4 * n_plugins + 4 + len(original_bytes) + 4
+    if detour:
+        # layout: stp | BL*N | ldp | ret
+        control_size = 4 + 4 * n_plugins + 4 + 4
+    else:
+        # layout: stp | BL*N | ldp | original | B
+        control_size = 4 + 4 * n_plugins + 4 + len(original_bytes) + 4
 
     # Compute plugin offsets and build resolved blobs
     plugin_offsets: list[int] = []
@@ -84,12 +90,15 @@ def build_hook_cave(
     # restore LR / FP
     out += LR_RESTORE
 
-    # original instruction
-    out += original_bytes
+    if detour:
+        out += RET
+    else:
+        # original instruction
+        out += original_bytes
 
-    # B back to hook_va + hook_size
-    b_back_src = cave_va + 4 + 4 * n_plugins + 4 + len(original_bytes)
-    out += encode_b(b_back_src, hook_va + hook_size).to_bytes(4, "little")
+        # B back to hook_va + hook_size
+        b_back_src = cave_va + 4 + 4 * n_plugins + 4 + len(original_bytes)
+        out += encode_b(b_back_src, hook_va + hook_size).to_bytes(4, "little")
 
     # plugin blobs
     for blob_bytes in resolved_blobs:
@@ -169,6 +178,7 @@ def patch_hook_macho(
     original_bytes: bytes,
     plugin_blobs: list[bytes],
     seg_name: str,
+    detour: bool = False,
 ) -> tuple[int, int]:
     """Mach-O: add a named segment via LIEF, place the hook cave in it,
     and write the B instruction at the hook point.
@@ -195,7 +205,10 @@ def patch_hook_macho(
     from .compiler import PluginBlob
 
     n_plugins = len(plugin_blobs)
-    control_size = 4 + 4 * n_plugins + 4 + len(original_bytes) + 4
+    if detour:
+        control_size = 4 + 4 * n_plugins + 4 + 4
+    else:
+        control_size = 4 + 4 * n_plugins + 4 + len(original_bytes) + 4
     payload_size = sum(
         (b.total_bytes if isinstance(b, PluginBlob) else len(b)) for b in plugin_blobs
     )
@@ -229,7 +242,7 @@ def patch_hook_macho(
     cave_va = new_seg.virtual_address
 
     # ── build the real cave blob with correct VAs ──
-    cave_blob = build_hook_cave(cave_va, new_hook_va, hook_size, original_bytes, plugin_blobs, target_binary=binary_path)
+    cave_blob = build_hook_cave(cave_va, new_hook_va, hook_size, original_bytes, plugin_blobs, target_binary=binary_path, detour=detour)
 
     # ── pass 2: update section content ──
     macho2 = lief.MachO.parse(str(output_path))

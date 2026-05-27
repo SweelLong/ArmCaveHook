@@ -81,10 +81,12 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
             seg = p0.segment_core
             hook_size = max(p.hook_size for p in group)
             hook_off = p0.hook_file_off
+            detour = any(p.detour for p in group)
 
             binary = _reparse()
             original_insn = bytes(binary.get_content_from_virtual_address(hook_va, hook_size))
-            print(f"[hook] 0x{hook_va:x} (file off 0x{hook_off:x}) window={hook_size} bytes, segment={seg}")
+            mode = "DETOUR" if detour else "INLINE"
+            print(f"[hook] 0x{hook_va:x} (file off 0x{hook_off:x}) window={hook_size} bytes, segment={seg}, mode={mode}")
 
             plugin_blobs = []
             for p in group:
@@ -95,10 +97,13 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
             if is_macho:
                 hook_va, cave_va = patch_hook_macho(
                     output_path, output_path, hook_off, hook_size,
-                    original_insn, plugin_blobs, seg_name=seg,
+                    original_insn, plugin_blobs, seg_name=seg, detour=detour,
                 )
             else:
-                control_overhead = 4 * len(plugin_blobs) + len(original_insn) + 4
+                if detour:
+                    control_overhead = 4 * len(plugin_blobs) + 4 + 4
+                else:
+                    control_overhead = 4 * len(plugin_blobs) + len(original_insn) + 4
                 aligned_blobs_size = sum((len(b) + 3) & ~3 for b in plugin_blobs)
                 cave_size = control_overhead + aligned_blobs_size
 
@@ -106,7 +111,7 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
                 binary = _reparse()
                 cave_va = seg_va(binary, seg, cave_size)
 
-                cave_blob = build_hook_cave(cave_va, hook_va, hook_size, original_insn, plugin_blobs)
+                cave_blob = build_hook_cave(cave_va, hook_va, hook_size, original_insn, plugin_blobs, detour=detour)
                 add_segment(output_path, SegmentPlan(seg, len(cave_blob), cave_blob), output_path)
 
                 binary = _reparse()
