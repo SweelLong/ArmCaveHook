@@ -17,14 +17,15 @@ ARM 跨平台静态 Inline Hook 自动化框架，专为已编译 AArch64 二进
 
 ArmCaveHook 是一个面向 ARM64 平台的静态二进制插桩框架。与传统动态 Hook 工具（如 Frida、Substrate）不同，它直接修改磁盘上的二进制文件，无需运行时依赖。
 
-**工作方式：** 框架读取已编译的 Mach-O / ELF 二进制，在目标地址处将原始指令替换为无条件跳转（B 指令），跳入框架自动新增的 Code Cave 代码段。Cave 内依次调用用户编写的 C 插件函数，执行完毕后恢复被覆盖的原始指令，再跳回原程序继续运行。
+**工作方式：** 框架读取已编译的 Mach-O / ELF 二进制，在目标地址处将原始指令替换为无条件跳转（B 指令），跳入框架自动新增的 Code Cave 代码段。Cave 内依次调用用户编写的 C 插件函数，执行完毕后可选择恢复原始指令跳回（Inline Hook）或直接返回调用者（Detour Hook）。
 
-**两种注入模式：**
+**三种注入模式：**
 
 | 模式 | HOOK_ADDR | 行为 |
 |---|---|---|
-| 独立函数注入 | 不定义 | 只将 C 代码编译为机器码，放入新增段，不修改原程序 |
-| Inline Hook | 定义目标地址 | 打断原指令 → 跳入 Cave → 执行插件 → 恢复 → 跳回 |
+| Code Injection | 不定义 | 只将 C 代码编译为机器码，并注入到新增段 |
+| Inline Hook | 指令地址 | 打断原指令 → 跳入新增段 → 执行插件 → 恢复原指令并跳回 |
+| Detour Hook | 函数地址 + `HOOK_DETOUR 1` | 打断原函数 → 跳入新增段 → 调用插件 |
 
 **适用场景：** iOS/Android 逆向分析、游戏修改、安全研究、二进制插桩教学。由于修改是静态的，修改后的二进制可直接分发，目标设备无需越狱/Root 或安装任何框架。
 
@@ -45,9 +46,10 @@ ArmCaveHook 是一个面向 ARM64 平台的静态二进制插桩框架。与传�
 - **插件化**：`plugins/` 目录放纯 C 文件，新增功能无需修改主控代码
 - **全自动解析**：Python 通过正则读取 C 文件顶部 `#define`，自动获取目标地址、偏移等
 - **自动扩容**：根据所有插件编译后的机器码大小计算 segment 大小
-- **两种模式**：
+- **三种模式**：
   - **独立函数**（无 `HOOK_ADDR`）：纯粹向二进制注入代码段，不修改原程序
   - **Inline Hook**（含 `HOOK_ADDR`）：原指令打掉换 B → Code Cave 执行插件 → 恢复原指令 → B 回下一指令
+  - **Detour Hook**（含 `HOOK_DETOUR`）：原指令打掉换 B → Cave 执行插件 → 不回放原指令 → 直接 `RET` 给调用者
 - **零汇编**：核心逻辑用纯 C 编写，clang 编译为裸机 ARM64 机器码
 - **静态无依赖**：直接修改二进制文件，运行时无需任何插件或服务
 - **Web 管理界面**：可视化插件编辑、流水线控制、二进制分析
@@ -76,12 +78,10 @@ ArmCaveHook/
 
 ## 插件格式
 
-### 独立函数插件（无 HOOK_ADDR）
-
-仅向二进制注入代码段，不 Hook 任何地址：
+### Code Injection 插件
 
 ```c
-#define SEGMENT_NAME myfunc
+#define SEGMENT_NAME my_add
 
 __attribute__((used))
 static int my_add(int x, int y) {
@@ -89,19 +89,31 @@ static int my_add(int x, int y) {
 }
 ```
 
-### Inline Hook 插件（含 HOOK_ADDR）
-
-在目标地址打断原指令，跳入 Code Cave 执行 Hook 函数：
+### Inline Hook 插件
 
 ```c
-#define SEGMENT_NAME myhook
-#define HOOK_ADDR   0x123456
+#define SEGMENT_NAME hook_entry
+#define HOOK_ADDR 0x123456
 
 __attribute__((used))
 static int hook_entry(int arg0) {
     // arg0 = x0 寄存器在 Hook 点的值
     if (arg0 > 100) return 0;
     return arg0 * 2;
+}
+```
+
+### Detour Hook 插件
+
+```c
+#define SEGMENT_NAME detour_entry
+#define HOOK_ADDR 0x123456
+#define HOOK_DETOUR 1
+
+__attribute__((used))
+static int detour_entry(int arg0) {
+    _printf("[detour] arg0=%d\n", arg0);
+    return 0;
 }
 ```
 
@@ -113,6 +125,7 @@ static int hook_entry(int arg0) {
 | `HOOK_ADDR` | 否 | 目标 hook 地址（不填则仅注入代码，不修改原程序） |
 | `HOOK_SIZE` | 否 | Hook 跳转窗口大小（不填默认 `0x4`，4 字节对齐） |
 | `SEGMENT_SIZE` | 否 | 手动指定段大小（不填则自动根据编译后机器码体积计算） |
+| `HOOK_DETOUR` | 否 | 设为 `1` 启用 Detour 模式，执行后不再回放原指令或跳回（默认 Inline） |
 
 > 不填 `SEGMENT_SIZE` 时，pipeline 根据 clang 编译后的机器码体积 + 跳转控制开销自动计算，全程零手工。
 

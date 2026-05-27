@@ -37,6 +37,11 @@ class PluginSpec:
         raw = self.defines.get("HOOK_SIZE", "0x4")
         return int(raw, 0)
 
+    @property
+    def detour(self) -> bool:
+        raw = self.defines.get("HOOK_DETOUR")
+        return raw is not None and int(raw, 0) != 0
+
 
 def load_plugin(path: Path) -> PluginSpec:
     defines: dict[str, str] = {}
