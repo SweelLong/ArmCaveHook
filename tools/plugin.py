@@ -51,7 +51,9 @@ class PluginSpec:
     @property
     def detour(self) -> bool:
         raw = self.defines.get("HOOK_DETOUR")
-        return raw is not None and int(raw, 0) != 0
+        if raw is not None and int(raw, 0) != 0:
+            return True
+        return self.hook_branch_host  # HOOK_BRANCH_HOST forces detour mode
 
     @property
     def hook_branch_host(self) -> bool:

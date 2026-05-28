@@ -9,6 +9,20 @@ import lief
 from .compiler import extract_cave_asm
 
 
+def _read_insn_at(target_binary: Path | None, va: int) -> int | None:
+    """Read one 4-byte instruction from the target binary at VA."""
+    if target_binary is None:
+        return None
+    import lief
+    b = lief.parse(str(target_binary))
+    if b is None:
+        return None
+    content = b.get_content_from_virtual_address(va, 4)
+    if content is None or len(content) < 4:
+        return None
+    return int.from_bytes(content[:4], 'little')
+
+
 def encode_b_cond(imm19: int, cond: int) -> bytes:
     """Encode B.cond with signed 19-bit offset (in instructions, *4 for bytes)."""
     if imm19 < 0:
@@ -111,7 +125,9 @@ def _patch_original_insns(original_bytes: bytes, hook_va: int, cave_original_va:
     return bytes(result)
 
 
-SENTINEL_BRANCH = b"\xef\xbe\xad\xde"  # 0xDEADBEEF in little-endian
+SENTINEL_BRANCH_DST = b"\xbe\xba\xfe\xca"  # 0xCAFEBABE LE → BRANCH_GOTO_DST (branch target)
+SENTINEL_BRANCH_NEXT = b"\xfe\xca\xad\xde"  # 0xDEADCAFE LE → BRANCH_GOTO_NEXT (fall-through)
+SENTINEL_BRANCH_CONV = b"\xfe\xca\xef\xbe"  # 0xBEEFCAFE LE → BRANCH_GOTO_CONV (convergence)
 
 
 def _decode_branch_target(insn: int, insn_va: int) -> int | None:
@@ -211,6 +227,18 @@ def encode_bl(src_va: int, dst_va: int) -> int:
     return 0x94000000 | (imm26 & 0x03FFFFFF)
 
 
+def _replace_sentinel(out: bytearray, sentinel: bytes, cave_va: int, target_va: int) -> None:
+    """Replace all occurrences of `sentinel` in `out` with a B to `target_va`."""
+    idx = 0
+    while True:
+        idx = out.find(sentinel, idx)
+        if idx == -1:
+            break
+        b_val = encode_b(cave_va + idx, target_va)
+        out[idx:idx+4] = b_val.to_bytes(4, "little")
+        idx += 4
+
+
 def _encode_branch_safe(src_va: int, dst_va: int, scratch: int = 16) -> bytes:
     """Encode B src→dst, falling back to ADRP+ADD+BR if ±128MB is exceeded."""
     try:
@@ -250,6 +278,7 @@ def build_hook_cave(
     target_binary: Path | None = None,
     detour: bool = False,
     branch_host: bool = False,
+    nop_addrs: list[int] | None = None,
 ) -> bytes:
     if not original_bytes or len(original_bytes) % 4:
         raise ValueError("hook window must be a non-empty multiple of 4 bytes")
@@ -259,20 +288,27 @@ def build_hook_cave(
     from .compiler import PluginBlob
 
     n_plugins = len(plugin_blobs)
-    if branch_host and not detour:
-        first_insn = int.from_bytes(original_bytes[:4], 'little')
-        branch_target = _decode_branch_target(first_insn, hook_va)
-        if branch_target is None:
-            raise ValueError("HOOK_BRANCH_HOST requires first instruction to be a PC-relative branch")
-        modified_original = b"\x1f\x20\x03\xd5" + original_bytes[4:]
+
+    # ── BRANCH_HOST: scan all branches in the hook window ──
+    if branch_host:
+        detour = True  # force detour (no return to original code)
+        branch_targets: list[int] = []
+        for i in range(0, len(original_bytes), 4):
+            insn = int.from_bytes(original_bytes[i:i+4], 'little')
+            t = _decode_branch_target(insn, hook_va + i)
+            if t is not None:
+                branch_targets.append(t)
+        if not branch_targets:
+            raise ValueError("HOOK_BRANCH_HOST requires at least one PC-relative branch")
+        target_dst = branch_targets[0]
     else:
-        modified_original = original_bytes
-        branch_target = None
+        target_dst = None
 
     if detour:
         patched_original = original_bytes
         control_size = 4 + 4 * n_plugins + 4 + 4
     else:
+        modified_original = original_bytes
         cave_original_va = cave_va + 4 + 4 * n_plugins + 4
         patched_original = _patch_original_insns(modified_original, hook_va, cave_original_va)
         control_size = 4 + 4 * n_plugins + 4 + len(patched_original) + 4
@@ -350,15 +386,47 @@ def build_hook_cave(
         if pad:
             out += b"\x00" * pad
 
-    if branch_target is not None:
-        idx = 0
-        while True:
-            idx = out.find(SENTINEL_BRANCH, idx)
-            if idx == -1:
-                break
-            b_val = encode_b(cave_va + idx, branch_target)
-            out[idx:idx+4] = b_val.to_bytes(4, "little")
-            idx += 4
+    # ── BRANCH_GOTO_DST / NEXT / CONV ──
+    if target_dst is not None:
+        target_next = hook_va + 4  # BRANCH_GOTO_NEXT
+
+        # BRANCH_GOTO_CONV: find the converge point by scanning BOTH paths
+        # for their first unconditional B.
+        def _first_b_from(start_va: int, limit: int) -> tuple[int | None, int | None]:
+            """Scan forward from start_va, return (B_target, B_va) or (None, None)."""
+            for va in range(start_va, limit, 4):
+                off = va - hook_va
+                if 0 <= off < len(original_bytes):
+                    insn = int.from_bytes(original_bytes[off:off+4], 'little')
+                else:
+                    insn = _read_insn_at(target_binary, va)
+                    if insn is None:
+                        continue
+                if (insn & 0xFC000000) == 0x14000000:  # B (unconditional)
+                    return _decode_branch_target(insn, va), va
+            return None, None
+
+        scan_limit = hook_va + hook_size
+        if nop_addrs:
+            scan_limit = max(scan_limit, max(nop_addrs) + 4)
+        else:
+            scan_limit = max(scan_limit, hook_va + 0x100)
+
+        conv_next, _ = _first_b_from(target_next, scan_limit)
+        conv_dst, _ = _first_b_from(target_dst, scan_limit)
+
+        if conv_next is not None and conv_dst is not None and conv_next == conv_dst:
+            target_conv = conv_next
+        elif conv_next is not None:
+            target_conv = conv_next
+        elif conv_dst is not None:
+            target_conv = conv_dst
+        else:
+            target_conv = hook_va + hook_size
+
+        _replace_sentinel(out, SENTINEL_BRANCH_DST, cave_va, target_dst)
+        _replace_sentinel(out, SENTINEL_BRANCH_NEXT, cave_va, target_next)
+        _replace_sentinel(out, SENTINEL_BRANCH_CONV, cave_va, target_conv)
 
     return bytes(out)
 
@@ -433,6 +501,7 @@ def patch_hook_macho(
     seg_name: str,
     detour: bool = False,
     branch_host: bool = False,
+    nop_addrs: list[int] | None = None,
 ) -> tuple[int, int]:
     """Mach-O: add a named segment via LIEF, place the hook cave in it,
     and write the B instruction at the hook point.
@@ -501,7 +570,7 @@ def patch_hook_macho(
 
     # ── build the real cave blob with correct VAs ──
     hook_va_for_cave = orig_hook_va
-    cave_blob = build_hook_cave(cave_va, hook_va_for_cave, hook_size, original_bytes, plugin_blobs, target_binary=binary_path, detour=detour, branch_host=branch_host)
+    cave_blob = build_hook_cave(cave_va, hook_va_for_cave, hook_size, original_bytes, plugin_blobs, target_binary=binary_path, detour=detour, branch_host=branch_host, nop_addrs=nop_addrs)
 
     # ── pass 2: update section content ──
     macho2 = lief.MachO.parse(str(output_path))

@@ -74,9 +74,15 @@ def list_available_symbols(binary_path: Path) -> list[dict]:
     symbols.append({"name": "arm_logf", "address": "built-in", "kind": "builtin",
                     "signature": "void arm_logf(const char *fmt, ...)",
                     "desc": "printf-style format string: %d %u %x %s %c %p, plus %ld etc."})
-    symbols.append({"name": "BRANCH_GOTO", "address": "built-in", "kind": "builtin",
+    symbols.append({"name": "BRANCH_GOTO_DST", "address": "built-in", "kind": "builtin",
                     "signature": "macro",
-                    "desc": "Branch-Host: jump to the original branch target (requires HOOK_BRANCH_HOST 1)"})
+                    "desc": "Branch-Host: jump to the conditional branch target (destination, requires HOOK_BRANCH_HOST 1)"})
+    symbols.append({"name": "BRANCH_GOTO_NEXT", "address": "built-in", "kind": "builtin",
+                    "signature": "macro",
+                    "desc": "Branch-Host: jump to HOOK+4 (fall-through, requires HOOK_BRANCH_HOST 1)"})
+    symbols.append({"name": "BRANCH_GOTO_CONV", "address": "built-in", "kind": "builtin",
+                    "signature": "macro",
+                    "desc": "Branch-Host: jump to convergence point (where both paths meet, requires HOOK_BRANCH_HOST 1)"})
 
     stubs_sec = next((s for s in binary.sections if s.name == "__stubs"), None)
     if stubs_sec is None:
