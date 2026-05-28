@@ -26,9 +26,7 @@ ArmCaveHook 是一个面向 ARM64 平台的静态二进制插桩框架。与传�
 | Code Injection | 仅 `SEGMENT_NAME` | 只将 C 代码编译为机器码，注入到新增段，不修改原程序 |
 | Inline Hook | `HOOK_ADDR` | 打断原指令 → 跳入 Cave → 执行插件 → 恢复原指令并跳回 |
 | Detour Hook | `HOOK_ADDR` + `HOOK_DETOUR 1` | 打断原指令 → 跳入 Cave → 执行插件 → 不恢复，不回跳 |
-| Branch Host | 加 `HOOK_BRANCH_HOST 1` | **修饰器**，Hook 点首条指令是分支时 NOP 分支而非普通指令，插件通过 `BRANCH_GOTO()` 控制是否跳转 |
-
-> Branch Host 不是独立模式，是叠加在 Inline/Detour 上的修饰器。`BRANCH_GOTO()` 后的行为取决于 `HOOK_DETOUR`：未开启则指令恢复并跳回；开启则不恢复、不回跳。
+| Branch Host | `HOOK_BRANCH_HOST 1` | 强制 Detour + 分支托管，手工控制三条跳转路径：`DST`（分支目标）、`NEXT`（下一条）、`CONV`（汇聚点） |
 
 **适用场景：** iOS/Android 逆向分析、游戏修改、安全研究、二进制插桩教学。由于修改是静态的，修改后的二进制可直接分发，目标设备无需越狱/Root 或安装任何框架。
 
@@ -49,10 +47,7 @@ ArmCaveHook 是一个面向 ARM64 平台的静态二进制插桩框架。与传�
 - **插件化**：`plugins/` 目录放纯 C 文件，新增功能无需修改主控代码
 - **全自动解析**：Python 通过正则读取 C 文件顶部 `#define`，自动获取目标地址、偏移等
 - **自动扩容**：根据所有插件编译后的机器码大小计算 segment 大小
-- **三种模式**：
-  - **独立函数**（无 `HOOK_ADDR`）：纯粹向二进制注入代码段，不修改原程序
-  - **Inline Hook**（含 `HOOK_ADDR`）：原指令打掉换 B → Code Cave 执行插件 → 恢复原指令 → B 回下一指令
-  - **Detour Hook**（含 `HOOK_DETOUR`）：原指令打掉换 B → Cave 执行插件 → 不回放原指令 → 直接 `RET` 给调用者
+- **四种模式**：Code Injection、Inline Hook、Detour Hook、Branch Host
 - **零汇编**：核心逻辑用纯 C 编写，clang 编译为裸机 ARM64 机器码
 - **静态无依赖**：直接修改二进制文件，运行时无需任何插件或服务
 - **Web 管理界面**：可视化插件编辑、流水线控制、二进制分析
@@ -86,6 +81,7 @@ ArmCaveHook/
 
 ```c
 #define SEGMENT_NAME my_add
+#define HOOK_NOP 0x123, 0x456
 
 __attribute__((used))
 static int my_add(int x, int y) {
@@ -102,7 +98,6 @@ static int my_add(int x, int y) {
 __attribute__((used))
 static int hook_entry(int arg0) {
     // arg0 = x0 寄存器在 Hook 点的值
-    if (arg0 > 100) return 0;
     return arg0 * 2;
 }
 ```
@@ -123,24 +118,36 @@ static int detour_entry(int arg0) {
 
 ### Branch Host 插件
 
+Hook 点是一条条件分支指令（B.cond / CBZ / CBNZ / TBZ / TBNZ）时可用。框架自动解析出三条路径：
+
+| 函数 | 语义 | 指向 |
+|---|---|---|
+| `BRANCH_GOTO_DST()` | 分支成立时的目标地址 | 条件分支指令解码出的 PC-relative 目标 |
+| `BRANCH_GOTO_NEXT()` | 不跳转时的下一条指令 | `hook_va + 0x4` |
+| `BRANCH_GOTO_CONV()` | 两条分支路径的汇聚点 | 从 NEXT 和 DST 分别向前扫，取第一个无条件 B 的共同目标 |
+
 ```c
-#define SEGMENT_NAME branch_test
-#define HOOK_ADDR 0x123456       // 此处是一条 CBZ/B.cond/B.NE 等分支指令
-#define HOOK_BRANCH_HOST 1       // 启用分支托管
+#define SEGMENT_NAME rating_str
+#define HOOK_ADDR 0x123456          // 此处是一条 CBZ x0, 0x123456
+#define HOOK_BRANCH_HOST 1          // 启用分支托管并强制劫持函数
 #define REGISTER_ARGS w0, x19
 
 __attribute__((used))
-static void handler(int w0, void* x19) {
-    if (w0 >= 5) {
-        // 改写字符串后续逻辑...
-        BRANCH_GOTO();  // 跳回原始分支目标地址
+static void rating_str(int w0, void* x19) {
+    if (w0 < 0) {
+        // 执行完代码后直接跳到汇聚点（条件语句外的代码）
+        BRANCH_GOTO_CONV();
+    } else if (w0 == 0) {
+        // 执行完代码后走分支成立路径（原始指令跳转目标）
+        BRANCH_GOTO_DST();
+    } else {
+        // 执行完代码后走不跳转的路径（原始后的下一指令）
+        BRANCH_GOTO_NEXT();
     }
-    // 不调 BRANCH_GOTO() → 分支不成立，继续执行 Cave → 恢复原指令并跳回
-    // 若同时开启了 HOOK_DETOUR，BRANCH_GOTO() 跳转后 Cave 结束，不恢复不回跳
 }
 ```
 
-宏说明：
+### 宏说明
 
 | 宏 | 必填 | 说明 |
 |---|---|---|
@@ -150,22 +157,20 @@ static void handler(int w0, void* x19) {
 | `SEGMENT_SIZE` | 否 | 手动指定段大小（不填则自动根据编译后机器码体积计算） |
 | `HOOK_DETOUR` | 否 | 设为 `1` 启用 Detour 模式，执行后不再回放原指令或跳回（默认 Inline） |
 | `REGISTER_ARGS` | 否 | 指定参数绑定的寄存器列表（如 `x20, x19`），插件函数参数 `arg0` 自动绑定 `x20`、`arg1` 绑定 `x19`，框架生成 MOV 包装器 |
-| `HOOK_BRANCH_HOST` | 否 | 设为 `1` 启用分支托管模式，Hook 点首条分支指令被 NOP，插件通过 `BRANCH_GOTO()` 宏手动控制跳转 |
-| `HOOK_NOP` | 否 | 直接 NOP 掉指定地址的指令，值为文件偏移（如 `0xA9B358, 0xA9B35C`），配合 `HOOK_SIZE` 指定 NOP 长度 |
+| `HOOK_BRANCH_HOST` | 否 | 设为 `1` 启用分支托管（强制 detour），Hook 点首条分支指令被解析为三条路径，插件通过 `BRANCH_GOTO_DST/NEXT/CONV` 手动跳转 |
+| `HOOK_NOP` | 否 | NOP 掉指定文件偏移处的指令，用于消除分支目标路径中的残留指令 |
 
-> 不填 `SEGMENT_SIZE` 时，pipeline 根据 clang 编译后的机器码体积 + 跳转控制开销自动计算，全程零手工。
-
-### 重要：`static` 关键字
+### 核心 `static` 关键字
 
 **所有插件函数必须加 `static`**。不加 `static` 时编译器将函数名导出为全局符号，导致 `__TEXT` 段出现指向插件函数的外部引用，重定位时框架会误解析为跨模块调用而报错。
 
-### BRANCH_GOTO 栈约束
+### BRANCH_GOTO_DST/NEXT/CONV 栈约束
 
-`BRANCH_GOTO()` 通过暴力修改 SP 跳回原始分支目标，要求插件函数满足：
+三个 GOTO 宏通过暴力修改 SP 跳回原始地址，要求插件函数满足：
 
 - **不能有额外的栈上局部变量**（除了函数参数本身）
 - 编译器(clang)生成的帧必须是标准 `stp x29, x30, [sp, #-0x10]!`
-- 如果函数有额外局部变量（超过参数个数），编译器会分配更大栈帧，BRANCH_GOTO 的 SP 修正会算错导致 crash
+- 如果函数有额外局部变量（超过参数个数），编译器会分配更大栈帧，GOTO 的 SP 修正会算错导致 crash
 
 需要额外局部变量时：改用 `static` 局部变量存储在数据段，不占用栈空间。
 

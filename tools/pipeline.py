@@ -43,13 +43,14 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
     if not plugins:
         raise RuntimeError("no plugins found")
 
-    # ── validate: BRANCH_GOTO() requires HOOK_BRANCH_HOST 1 ──
+    # ── validate: BRANCH_GOTO_*() requires HOOK_BRANCH_HOST 1 ──
     for p in plugins:
         src = p.path.read_text(encoding="utf-8", errors="ignore")
-        if "BRANCH_GOTO()" in src and not p.hook_branch_host:
-            raise ValueError(
-                f"{p.name}: BRANCH_GOTO() requires #define HOOK_BRANCH_HOST 1"
-            )
+        for macro in ("BRANCH_GOTO_DST()", "BRANCH_GOTO_NEXT()", "BRANCH_GOTO_CONV()"):
+            if macro in src and not p.hook_branch_host:
+                raise ValueError(
+                    f"{p.name}: {macro} requires #define HOOK_BRANCH_HOST 1"
+                )
 
     standalone = [p for p in plugins if p.hook_file_off is None and not p.hook_nop_addrs]
     hook_plugins = [p for p in plugins if p.hook_file_off is not None]
@@ -113,6 +114,15 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
 
             binary = _reparse()
             original_insn = bytes(binary.get_content_from_virtual_address(hook_va, hook_size))
+
+            # collect NOP VAs for CONV scan (convert file offsets → VAs)
+            nop_vas: list[int] = []
+            for p, _ in group:
+                for nop_off in p.hook_nop_addrs:
+                    nop_va = binary.offset_to_virtual_address(nop_off)
+                    if isinstance(nop_va, int) and nop_va >= 0:
+                        nop_vas.append(nop_va)
+
             mode = "DETOUR" if detour else "INLINE"
             if branch_host:
                 mode += " BRANCH_HOST"
@@ -129,7 +139,7 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
                 hook_va, cave_va = patch_hook_macho(
                     output_path, output_path, hook_off, hook_size,
                     original_insn, plugin_blobs, seg_name=seg, detour=detour,
-                    branch_host=branch_host,
+                    branch_host=branch_host, nop_addrs=nop_vas,
                 )
             else:
                 from .patcher import _patched_size
@@ -150,7 +160,7 @@ def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run
                 binary = _reparse()
                 cave_va = seg_va(binary, seg, cave_size)
 
-                cave_blob = build_hook_cave(cave_va, hook_va, hook_size, original_insn, plugin_blobs, detour=detour, branch_host=branch_host)
+                cave_blob = build_hook_cave(cave_va, hook_va, hook_size, original_insn, plugin_blobs, detour=detour, branch_host=branch_host, nop_addrs=nop_vas)
                 add_segment(output_path, SegmentPlan(seg, len(cave_blob), cave_blob), output_path)
 
                 binary = _reparse()
