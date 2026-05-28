@@ -259,7 +259,13 @@ def _read_readme_html() -> str:
     readme = PROJECT_ROOT / "README.md"
     try:
         text = readme.read_text(encoding="utf-8", errors="ignore")
-        return md_lib.markdown(text, extensions=["fenced_code", "tables"])
+        html = md_lib.markdown(text, extensions=["fenced_code", "tables"])
+        html = re.sub(
+            r'<li>\[([ x])\] ',
+            lambda m: '<li class="task-list-item"><input type="checkbox" disabled' + (' checked' if m.group(1) == 'x' else '') + '> ',
+            html,
+        )
+        return html
     except FileNotFoundError:
         return "<p><em>No README.md found.</em></p>"
 

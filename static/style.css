@@ -869,6 +869,23 @@ existing-files summary {
 .muted { color: var(--muted); font-size: 14px; }
 code { font-family: "SF Mono", "Fira Code", monospace; font-size: 13px; }
 
+/* ── footer ──────────────────────── */
+
+.footer {
+  margin-top: 48px; padding-top: 20px;
+  border-top: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+  font-size: 13px; color: var(--muted);
+}
+.footer a {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--muted); text-decoration: none;
+  transition: color var(--transition);
+}
+.footer a:hover { color: var(--accent); }
+.footer-copy { font-size: 12px; }
+
 /* ── responsive ──────────────────── */
 
 @media (max-width: 768px) {
