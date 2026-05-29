@@ -828,8 +828,7 @@ function syncEditorScroll() {
   if (!codeTextarea) return;
   if (lineGutter) lineGutter.scrollTop = codeTextarea.scrollTop;
   if (codeHighlight) {
-    codeHighlight.scrollTop = codeTextarea.scrollTop;
-    codeHighlight.scrollLeft = codeTextarea.scrollLeft;
+    codeHighlight.style.transform = 'translateZ(0) translateY(' + (-codeTextarea.scrollTop) + 'px) translateX(' + (-codeTextarea.scrollLeft) + 'px)';
   }
 }
 
