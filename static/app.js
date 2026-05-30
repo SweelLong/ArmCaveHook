@@ -442,6 +442,7 @@ async function editPlugin(name) {
   openModal(_("edit_plugin"));
   updateLineNumbers();
   highlightSyntax();
+  setTimeout(autoLoadSymbols, 200);
 }
 
 async function deletePlugin(name) {
@@ -474,6 +475,7 @@ if (btnNew) {
     openModal(_("new_plugin"));
     updateLineNumbers();
     highlightSyntax();
+    setTimeout(autoLoadSymbols, 200);
   });
 }
 
@@ -947,6 +949,8 @@ if (symbolsBinarySelect) {
           return;
         }
         symbolsCache = data.symbols || [];
+        lastSelectedBinary = name;
+        localStorage.setItem('armcave-last-binary', name);
         if (symbolsSearch) {
           symbolsSearch.style.display = symbolsCache.length ? "" : "none";
           symbolsSearch.value = "";
@@ -989,6 +993,250 @@ if (symbolsList) {
     }).catch(function () {});
   });
 }
+
+// ── autocomplete / intellisense ─────────────────
+
+// ========== completion data (loaded from JSON + symbols) ==========
+
+var AC_FRAMEWORK = []; // loaded from completions.json
+
+// ========== auto-load symbols ==========
+
+var lastSelectedBinary = localStorage.getItem('armcave-last-binary') || '';
+
+var mainBinarySelect = document.getElementById('binary-select');
+if (mainBinarySelect) {
+  mainBinarySelect.addEventListener('change', function () {
+    lastSelectedBinary = mainBinarySelect.value || '';
+    localStorage.setItem('armcave-last-binary', lastSelectedBinary);
+    if (symbolsBinarySelect) {
+      autoLoadSymbols();
+    }
+  });
+}
+
+function autoLoadSymbols() {
+  var sel = document.getElementById('symbols-binary-select');
+  if (!sel) return;
+  var name = '';
+  if (mainBinarySelect && mainBinarySelect.value) name = mainBinarySelect.value;
+  else if (lastSelectedBinary) name = lastSelectedBinary;
+  else name = sel.value;
+  if (!name) return;
+  if (sel.value === name && symbolsCache && symbolsCache.length > 0) return;
+  for (var i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === name) {
+      sel.value = name;
+      sel.dispatchEvent(new Event('change'));
+      return;
+    }
+  }
+}
+
+// ========== dropdown engine ==========
+
+var acDropdown = null;
+var acItems = [];
+var acIndex = -1;
+
+function acInit() {
+  if (acDropdown) return;
+  acDropdown = document.createElement('div');
+  acDropdown.className = 'ac-dropdown';
+  document.body.appendChild(acDropdown);
+  document.addEventListener('mousedown', function (e) {
+    if (acDropdown.style.display !== 'none' && !acDropdown.contains(e.target) && e.target !== codeTextarea) {
+      acHide();
+    }
+  });
+}
+
+function acDropdownVisible() {
+  return acDropdown && acDropdown.style.display !== 'none';
+}
+
+function acShow(items) {
+  if (!items || items.length === 0) { acHide(); return; }
+  acItems = items;
+  acIndex = -1;
+
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    var label = items[i].label;
+    var displayLabel = label.split('\n')[0];
+    if (label.indexOf('\n') !== -1) displayLabel += ' ...';
+    html += '<div class="ac-item" data-idx="' + i + '">' +
+      '<span class="ac-label">' + displayLabel.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>' +
+      '<span class="ac-desc ac-type-' + items[i].type + '">' + (items[i].desc || '') + '</span>' +
+      '</div>';
+  }
+  acDropdown.innerHTML = html;
+
+  var ta = codeTextarea;
+  var er = ta.getBoundingClientRect();
+  var lines = ta.value.substring(0, ta.selectionStart).split('\n');
+  var top = er.top + (lines.length - 1) * 20 - ta.scrollTop + 22;
+  var left = er.left + Math.min(lines[lines.length - 1].length * 8.5, er.width - 360);
+
+  acDropdown.style.top = Math.max(2, Math.min(top, window.innerHeight - 320)) + 'px';
+  acDropdown.style.left = Math.max(2, left) + 'px';
+  acDropdown.style.display = 'block';
+
+  var children = Array.from(acDropdown.children);
+  for (var i = 0; i < children.length; i++) {
+    (function (idx) {
+      children[idx].addEventListener('mousedown', function (e) { e.preventDefault(); acApply(idx); });
+      children[idx].addEventListener('mouseenter', function () { acHighlight(idx); });
+    })(i);
+  }
+  acHighlight(0);
+}
+
+function acHide() {
+  if (acDropdown) acDropdown.style.display = 'none';
+  acItems = [];
+  acIndex = -1;
+}
+
+function acHighlight(index) {
+  if (!acDropdown) return;
+  var items = acDropdown.querySelectorAll('.ac-item');
+  for (var i = 0; i < items.length; i++) {
+    items[i].classList.toggle('ac-sel', i === index);
+  }
+  if (index >= 0 && items[index]) items[index].scrollIntoView({ block: 'nearest' });
+  acIndex = index;
+}
+
+function acApply(index) {
+  if (index < 0 || index >= acItems.length) return;
+  var item = acItems[index];
+  var ta = codeTextarea;
+  var start = ta.selectionStart;
+  var before = ta.value.substring(0, start);
+  var lineStart = before.lastIndexOf('\n') + 1;
+  var curIndent = before.substring(lineStart).match(/^[ \t]*/)[0];
+
+  var wordStart;
+  if (item.label[0] === '#') {
+    var hashPos = before.indexOf('#', lineStart);
+    wordStart = hashPos >= lineStart ? hashPos : start;
+  } else {
+    var m = before.match(/\w*$/);
+    wordStart = m ? start - m[0].length : start;
+  }
+
+  var label = item.label;
+  if (label.indexOf('\n') !== -1) {
+    var lines = label.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      lines[i] = curIndent + lines[i];
+    }
+    label = lines.join('\n');
+  }
+
+  ta.focus();
+  ta.value = ta.value.substring(0, wordStart) + label + ta.value.substring(start);
+  ta.selectionStart = ta.selectionEnd = wordStart + label.length;
+  acHide();
+  editorRefresh();
+}
+
+// ========== fuzzy matching ==========
+
+function fuzzyMatch(q, t) {
+  return t.indexOf(q) !== -1;
+}
+
+// ========== trigger on input ==========
+
+function acTrigger() {
+  var ta = codeTextarea;
+  if (!ta || document.activeElement !== ta) return;
+
+  var before = ta.value.substring(0, ta.selectionStart);
+  var curLine = before.substring(before.lastIndexOf('\n') + 1);
+
+  var m = curLine.match(/([\w]+)$/);
+  if (!m || m[1].length === 0) { acHide(); return; }
+  var ql = m[1].toLowerCase();
+
+  var results = [];
+
+  // 1. Framework completions (macros, keywords, types, patterns, functions)
+  for (var i = 0; i < AC_FRAMEWORK.length; i++) {
+    var item = AC_FRAMEWORK[i];
+    var keys = [item.label.toLowerCase()];
+    if (item.match) keys.push(item.match.toLowerCase());
+    for (var k = 0; k < keys.length; k++) {
+      if (fuzzyMatch(ql, keys[k])) {
+        results.push(item);
+        break;
+      }
+    }
+  }
+
+  // 2. Binary symbols
+  if (symbolsCache && symbolsCache.length > 0) {
+    for (var i = 0; i < symbolsCache.length; i++) {
+      var s = symbolsCache[i];
+      var n1 = s.name.toLowerCase();
+      var n2 = s.name.replace(/^_/, '').toLowerCase();
+      if (fuzzyMatch(ql, n1) || fuzzyMatch(ql, n2)) {
+        var label = s.name;
+        if (s.signature !== 'macro') label += '(';
+        results.push({
+          label: label,
+          desc: s.signature || s.kind,
+          type: s.kind === 'builtin' ? 'builtin' : 'imported',
+        });
+      }
+    }
+  }
+
+  if (results.length === 0) { acHide(); return; }
+  acShow(results);
+}
+
+// ========== events ==========
+
+if (codeTextarea) {
+  codeTextarea.addEventListener('input', function () {
+    acTrigger();
+  });
+
+  codeTextarea.addEventListener('keydown', function (e) {
+    if (!acDropdownVisible()) return;
+    switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault(); e.stopPropagation();
+      acHighlight(Math.min(acIndex + 1, acItems.length - 1));
+      break;
+    case 'ArrowUp':
+      e.preventDefault(); e.stopPropagation();
+      acHighlight(Math.max(acIndex - 1, 0));
+      break;
+    case 'Enter':
+    case 'Tab':
+      if (acIndex >= 0) {
+        e.preventDefault(); e.stopPropagation();
+        acApply(acIndex);
+      }
+      break;
+    case 'Escape':
+      e.preventDefault(); e.stopPropagation();
+      acHide();
+      break;
+    }
+  });
+}
+
+fetch('/static/completions.json')
+  .then(function (r) { return r.json(); })
+  .then(function (d) { AC_FRAMEWORK = d || []; })
+  .catch(function () { AC_FRAMEWORK = []; });
+
+acInit();
 
 // ── lang cookie ──────────────────────────────
 
