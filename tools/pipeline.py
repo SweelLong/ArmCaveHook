@@ -1,174 +1,175 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
+import hashlib
+import re
 import shutil
 import subprocess
 
 import lief
 
-from .compiler import compile_plugin
-from .plugin import load_plugin
-from .segment import SegmentPlan, add_segment, seg_name, seg_va
-from .patcher import build_hook_cave, patch_hook_macho, patch_hook_window
+from .compiler import assemble_aarch64, compile_plugin
+from .patcher import build_hook_cave, encode_b, patch_bytes_va, patch_hook_macho, patch_hook_window
+from .plugin import HookAction, load_plugin
+from .segment import SegmentPlan, add_segment, seg_va, segment_file_offset, write_at_offset
+
+
+def _parse(path: Path):
+    binary = lief.parse(str(path))
+    if binary is None:
+        raise RuntimeError(f"failed to parse {path}")
+    return binary
+
+
+def _off(binary, va: int) -> int:
+    off = binary.virtual_address_to_offset(va)
+    if not isinstance(off, int) or off < 0:
+        raise ValueError(f"cannot map VA 0x{va:x}")
+    return off
+
+
+def _entry(binary) -> int:
+    ep = getattr(binary, "entrypoint", 0) or 0
+    if not ep:
+        raise ValueError("binary entrypoint not found")
+    return ep
+
+
+def _seg(plugin: str, index: int, action: HookAction) -> str:
+    if action.segment and action.segment not in ("auto", "armcave"):
+        return action.segment
+    raw = f"{plugin}_{action.handler or action.kind}"
+    base = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_").lower() or "armcave"
+    suffix = hashlib.sha1(f"{plugin}:{index}:{action.kind}:{action.address}".encode()).hexdigest()[:3]
+    return f"ac_{base[:7]}_{suffix}"
+
+
+def _patch_payload(action: HookAction) -> bytes:
+    if action.kind in ("hex", "bytes"):
+        return bytes.fromhex(action.data)
+    if action.kind == "asm":
+        payload = assemble_aarch64(action.data.replace(";", "\n"))
+        if action.size:
+            if action.size % len(payload):
+                raise ValueError("ASM size must be a multiple of assembled payload size")
+            payload *= action.size // len(payload)
+        return payload
+    raise ValueError(f"unsupported patch action: {action.kind}")
+
+
+def _add_cave(input_path: Path, output_path: Path, segment: str, blob, action: HookAction) -> int:
+    item = blob.for_action(action)
+    size = 4 + item.total_bytes
+    binary = _parse(output_path)
+    if isinstance(binary, lief.MachO.Binary):
+        add_segment(output_path, SegmentPlan(segment, size, b"\x00" * size), output_path)
+        binary = _parse(output_path)
+        cave_va = seg_va(binary, segment, size)
+        cave_off = segment_file_offset(binary, segment)
+        data_va = cave_va + 4 + ((len(item.text) + 15) & ~15)
+        built = item.build(cave_va + 4, data_va, output_path)
+        head = encode_b(cave_va, cave_va + 4 + item.entry_offset).to_bytes(4, "little")
+        write_at_offset(output_path, cave_off, head + built, size)
+        return cave_va
+    add_segment(output_path, SegmentPlan(segment, size, b"\x00" * size), output_path)
+    binary = _parse(output_path)
+    cave_va = seg_va(binary, segment, size)
+    data_va = cave_va + 4 + ((len(item.text) + 15) & ~15)
+    built = item.build(cave_va + 4, data_va, input_path)
+    head = encode_b(cave_va, cave_va + 4 + item.entry_offset).to_bytes(4, "little")
+    add_segment(output_path, SegmentPlan(segment, len(head) + len(built), head + built), output_path)
+    return cave_va
+
+
+def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool) -> bool:
+    compiled = []
+    for spec in plugins:
+        blob = compile_plugin(spec.path, target_binary=input_path)
+        spec.actions = blob.declarations
+        if blob.declarations:
+            compiled.append((spec, blob))
+    if not compiled:
+        return False
+    binary = _parse(output_path if output_path.exists() else input_path)
+    caves = []
+    direct = []
+    hooks = defaultdict(list)
+    for spec, blob in compiled:
+        for i, action in enumerate(blob.declarations):
+            if action.kind == "cave":
+                action.segment = _seg(spec.name, i, action)
+                caves.append((spec, blob, action))
+                continue
+            addr = _entry(binary) if action.address is None and action.handler else action.address
+            if addr is None:
+                raise ValueError(f"{spec.name}: {action.kind} missing address")
+            action.address = addr
+            action.segment = _seg(spec.name, i, action)
+            if action.kind in ("hex", "bytes", "asm"):
+                direct.append(action)
+            elif action.kind == "hook":
+                hooks[addr].append((spec, blob, action))
+            else:
+                raise ValueError(f"{spec.name}: unsupported action {action.kind}")
+    if dry_run:
+        for _, _, a in caves:
+            print(f"cave: segment={a.segment} handler={a.handler}")
+        for actions in hooks.values():
+            for _, _, a in actions:
+                print(f"{a.kind}: 0x{a.address:x} segment={a.segment} handler={a.handler}")
+        for a in direct:
+            print(f"{a.kind}: 0x{a.address:x} size={a.size or 'auto'}")
+        return True
+    for _, blob, action in caves:
+        cave_va = _add_cave(input_path, output_path, action.segment, blob, action)
+        print(f"[cave] segment={action.segment} va=0x{cave_va:x} handler={action.handler}")
+    for action in direct:
+        payload = _patch_payload(action)
+        print(f"[{action.kind}] 0x{action.address:x} size={len(payload)}")
+        patch_bytes_va(output_path, output_path, action.address, payload)
+    for hook_va, group in hooks.items():
+        binary = _parse(output_path)
+        hook_size = 4
+        original = bytes(binary.get_content_from_virtual_address(hook_va, hook_size))
+        if len(original) != hook_size:
+            raise ValueError(f"cannot read hook window at 0x{hook_va:x}")
+        detour = True
+        branch = False
+        seg = group[0][2].segment
+        blobs = [blob.for_action(a) for _, blob, a in group]
+        print(f"[hook] 0x{hook_va:x} segment={seg} handlers={len(blobs)}")
+        if isinstance(binary, lief.MachO.Binary):
+            patch_hook_macho(output_path, output_path, _off(binary, hook_va), hook_size, original, blobs, seg, detour, branch)
+        else:
+            control = 4 + len(blobs) * 4 + 4 + (4 if detour else len(original) + 4)
+            size = control + sum(b.total_bytes + (4 * len(b.register_args) + 4 if b.register_args else 0) for b in blobs)
+            add_segment(output_path, SegmentPlan(seg, size, b""), output_path)
+            binary = _parse(output_path)
+            cave_va = seg_va(binary, seg, size)
+            cave = build_hook_cave(cave_va, hook_va, hook_size, original, blobs, input_path, detour, branch)
+            add_segment(output_path, SegmentPlan(seg, len(cave), cave), output_path)
+            patch_hook_window(output_path, output_path, hook_va, hook_size, cave_va)
+        print(f"[done] 0x{hook_va:x}")
+    return True
 
 
 def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run: bool = False, plugin_names: list[str] | None = None) -> None:
     if not input_path.exists():
         raise FileNotFoundError(input_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
     plugins = []
     if plugins_dir.exists():
-        if plugin_names is not None:
-            for name in plugin_names:
-                path = plugins_dir / name
-                if path.exists():
-                    plugins.append(load_plugin(path))
-        else:
-            for path in sorted(plugins_dir.glob("*.c")):
+        names = plugin_names if plugin_names is not None else [p.name for p in sorted(plugins_dir.iterdir()) if p.suffix == ".cpp"]
+        for name in names:
+            path = plugins_dir / name
+            if path.exists():
                 plugins.append(load_plugin(path))
-
-    if dry_run:
-        for plugin in plugins:
-            if plugin.hook_file_off is not None:
-                hook_addr = f"0x{plugin.hook_file_off:x}"
-                print(f"{plugin.name}: segment={plugin.segment_core} hook={hook_addr} window=0x{plugin.hook_size:x}")
-            elif plugin.hook_nop_addrs:
-                addrs = ", ".join(f"0x{a:x}" for a in plugin.hook_nop_addrs)
-                print(f"{plugin.name}: NOP {addrs} size=0x{plugin.hook_size:x}")
-            else:
-                print(f"{plugin.name}: standalone segment={plugin.segment_core}")
-        return
-
     if not plugins:
         raise RuntimeError("no plugins found")
-
-    # ── validate: BRANCH_GOTO_*() requires HOOK_BRANCH_HOST 1 ──
-    for p in plugins:
-        src = p.path.read_text(encoding="utf-8", errors="ignore")
-        for macro in ("BRANCH_GOTO_DST()", "BRANCH_GOTO_NEXT()", "BRANCH_GOTO_CONV()"):
-            if macro in src and not p.hook_branch_host:
-                raise ValueError(
-                    f"{p.name}: {macro} requires #define HOOK_BRANCH_HOST 1"
-                )
-
-    standalone = [p for p in plugins if p.hook_file_off is None and not p.hook_nop_addrs]
-    hook_plugins = [p for p in plugins if p.hook_file_off is not None]
-
-    shutil.copyfile(input_path, output_path)
-
-    def _reparse():
-        b = lief.parse(str(output_path))
-        if b is None:
-            raise RuntimeError(f"failed to parse {output_path}")
-        return b
-
-    # ── NOP: direct instruction NOP ──
-    NOP_BYTES = b"\x1f\x20\x03\xd5"
-    for p in plugins:
-        if not p.hook_nop_addrs:
-            continue
-        nop_size = p.hook_size
-        for off in p.hook_nop_addrs:
-            print(f"[nop] 0x{off:x} size={nop_size}")
-            data = bytearray(output_path.read_bytes())
-            if off + nop_size > len(data):
-                raise ValueError(f"NOP file offset 0x{off:x} out of range")
-            for pos in range(off, off + nop_size, 4):
-                data[pos:pos+4] = NOP_BYTES
-            output_path.write_bytes(data)
-
-    # ── standalone: each plugin gets its own segment ──
-    for p in standalone:
-        blob = compile_plugin(p.path, target_binary=input_path)
-        blob_bytes = blob.build(0, 0)  # standalone: offset 0 in segment
-        print(f"[standalone] {p.name}: {len(blob_bytes)} bytes -> segment {p.segment_core}")
-        add_segment(output_path, SegmentPlan(p.segment_core, len(blob_bytes), blob_bytes), output_path)
-
-    is_macho = isinstance(_reparse(), lief.MachO.Binary)
-
-    # ── hook: group by HOOK_ADDR, each group gets one cave ──
-    if hook_plugins:
-        # Expand multi-addr plugins into per-address entries
-        hook_entries: list[tuple] = []
-        for p in hook_plugins:
-            binary = _reparse()
-            for off in p.hook_file_offs:
-                va = binary.offset_to_virtual_address(off)
-                if isinstance(va, int) and va < 0:
-                    raise ValueError(f"failed to map file offset 0x{off:x} to VA for {p.name}")
-                hook_entries.append((p, off, va))
-
-        from collections import defaultdict
-        by_addr: dict[int, list] = defaultdict(list)
-        for p, off, va in hook_entries:
-            by_addr[va].append((p, off))
-
-        for hook_va, group in by_addr.items():
-            p0, off0 = group[0]
-            seg = p0.segment_core
-            hook_size = max(p0.hook_size for p0, _ in group)
-            hook_off = off0
-            detour = any(p0.detour for p0, _ in group)
-            branch_host = any(p0.hook_branch_host for p0, _ in group)
-
-            binary = _reparse()
-            original_insn = bytes(binary.get_content_from_virtual_address(hook_va, hook_size))
-
-            # collect NOP VAs for CONV scan (convert file offsets → VAs)
-            nop_vas: list[int] = []
-            for p, _ in group:
-                for nop_off in p.hook_nop_addrs:
-                    nop_va = binary.offset_to_virtual_address(nop_off)
-                    if isinstance(nop_va, int) and nop_va >= 0:
-                        nop_vas.append(nop_va)
-
-            mode = "DETOUR" if detour else "INLINE"
-            if branch_host:
-                mode += " BRANCH_HOST"
-            print(f"[hook] 0x{hook_va:x} (file off 0x{hook_off:x}) window={hook_size} bytes, segment={seg}, mode={mode}")
-
-            plugin_blobs = []
-            for p, off in group:
-                blob = compile_plugin(p.path, target_binary=input_path)
-                blob.register_args = p.register_args
-                plugin_blobs.append(blob)
-                print(f"  {p.name}: {blob.total_bytes} bytes")
-
-            if is_macho:
-                hook_va, cave_va = patch_hook_macho(
-                    output_path, output_path, hook_off, hook_size,
-                    original_insn, plugin_blobs, seg_name=seg, detour=detour,
-                    branch_host=branch_host, nop_addrs=nop_vas,
-                )
-            else:
-                from .patcher import _patched_size
-                if detour:
-                    control_overhead = 4 + 4 * len(plugin_blobs) + 4 + 4
-                else:
-                    control_overhead = 4 + 4 * len(plugin_blobs) + 4 + _patched_size(original_insn) + 4
-                from .compiler import PluginBlob
-                aligned_blobs_size = sum((len(b) + 3) & ~3 for b in plugin_blobs)
-                wrapper_overhead = sum(
-                    4 * len(b.register_args) + 4
-                    for b in plugin_blobs
-                    if isinstance(b, PluginBlob) and b.register_args
-                )
-                cave_size = control_overhead + aligned_blobs_size + wrapper_overhead
-
-                add_segment(output_path, SegmentPlan(seg, cave_size, b""), output_path)
-                binary = _reparse()
-                cave_va = seg_va(binary, seg, cave_size)
-
-                cave_blob = build_hook_cave(cave_va, hook_va, hook_size, original_insn, plugin_blobs, detour=detour, branch_host=branch_host, nop_addrs=nop_vas)
-                add_segment(output_path, SegmentPlan(seg, len(cave_blob), cave_blob), output_path)
-
-                binary = _reparse()
-                patch_hook_window(output_path, output_path, hook_va, hook_size, cave_va)
-            print(f"[done] patched 0x{hook_va:x} -> 0x{cave_va:x}")
-
-    if is_macho:
-        subprocess.run(
-            ["codesign", "--force", "--sign", "-", str(output_path)],
-            capture_output=True,
-        )
+    if not dry_run:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(input_path, output_path)
+    if not _standard(input_path, output_path, plugins, dry_run):
+        raise RuntimeError("no armcave actions found")
+    if not dry_run and isinstance(_parse(output_path), lief.MachO.Binary):
+        subprocess.run(["codesign", "--force", "--sign", "-", str(output_path)], capture_output=True)

@@ -137,7 +137,7 @@ body {
 .main-content {
   flex: 1; min-width: 0;
   padding: 32px 36px;
-  max-width: 1000px;
+  max-width: 1180px;
 }
 
 .page-header {
@@ -290,6 +290,30 @@ body {
 .form-group label small { font-weight: 400; }
 .form-actions { display: flex; gap: 10px; }
 
+.editor-page-header {
+  align-items: flex-start;
+}
+.editor-page-header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.editor-card {
+  padding: 0;
+  overflow: hidden;
+}
+.editor-page-body {
+  padding: 20px 24px 18px;
+}
+.editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 24px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--sidebar-bg);
+}
+
 input, select, textarea {
   background: var(--bg); color: var(--text);
   border: 1px solid var(--border); border-radius: 8px;
@@ -304,6 +328,18 @@ textarea { resize: vertical; font-family: "SF Mono", "Fira Code", "Cascadia Code
 
 /* ── code editor ─────────────────── */
 
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.editor-toolbar label { margin: 0; }
+.api-toggle {
+  min-width: 86px;
+  text-align: center;
+}
+
 .code-editor {
   display: flex;
   border: 1px solid var(--border);
@@ -311,7 +347,42 @@ textarea { resize: vertical; font-family: "SF Mono", "Fira Code", "Cascadia Code
   overflow: hidden;
   background: #1e1e1e;
   transition: border-color var(--transition), box-shadow var(--transition);
-  min-height: 280px;
+  min-height: 460px;
+}
+
+.api-doc-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--sidebar-bg);
+  padding: 4px 12px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+.api-doc-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+}
+.api-doc-item {
+  border-top: 1px solid var(--border);
+  padding: 10px 0;
+}
+.api-doc-item:first-of-type { border-top: 0; padding-top: 0; }
+.api-doc-item:nth-child(2) { border-top: 0; padding-top: 0; }
+.api-doc-item code {
+  display: block;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
+  color: var(--accent);
+}
+.api-doc-item p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 4px;
 }
 .code-editor:focus-within {
   border-color: var(--accent);
@@ -531,52 +602,6 @@ existing-files summary {
 }
 .alert-error { background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger); }
 .alert-success { background: rgba(16,185,129,.08); border: 1px solid var(--success); color: var(--success); }
-
-/* ── modal ───────────────────────── */
-
-.modal-backdrop {
-  position: fixed; inset: 0; z-index: 1000;
-  background: rgba(0,0,0,.55);
-  display: flex; align-items: center; justify-content: center;
-  animation: fadeIn .2s ease;
-}
-.modal-dialog {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  width: 90vw; max-width: 840px; max-height: 85vh;
-  display: flex; flex-direction: column;
-  box-shadow: 0 20px 60px rgba(0,0,0,.25);
-  animation: modalSlideIn .25s ease;
-}
-.modal-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 20px 24px 0;
-}
-.modal-header h2 { font-size: 18px; }
-.modal-close {
-  background: none; border: none; font-size: 28px;
-  color: var(--muted); cursor: pointer;
-  line-height: 1; padding: 0 4px;
-  transition: color var(--transition);
-}
-.modal-close:hover { color: var(--text); }
-.modal-body {
-  padding: 16px 24px; overflow-y: auto; flex: 1;
-}
-.modal-footer {
-  display: flex; gap: 8px; padding: 16px 24px 20px;
-  border-top: 1px solid var(--border);
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@keyframes modalSlideIn {
-  from { opacity: 0; transform: translateY(-30px) scale(.96); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
 
 /* ── toggle switch ───────────────── */
 
@@ -925,4 +950,10 @@ code { font-family: "SF Mono", "Fira Code", monospace; font-size: 13px; }
   .sidebar { width: 200px; min-width: 200px; }
   .main-content { padding: 20px; }
   .stat-grid, .action-grid { grid-template-columns: 1fr; }
+  .editor-page-body { padding: 14px 16px; }
+  .editor-actions { padding: 14px 16px 18px; flex-wrap: wrap; }
+  .code-editor { min-height: 360px; }
+  .api-doc-list { grid-template-columns: 1fr; }
+  .api-doc-item:nth-child(2) { border-top: 1px solid var(--border); padding-top: 10px; }
+  .api-doc-panel { max-height: 240px; }
 }

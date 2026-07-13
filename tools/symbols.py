@@ -6,233 +6,119 @@ import struct
 import lief
 
 
-def _resolve_via_symbol_table(binary: lief.MachO.Binary, symbol_name: str) -> int | None:
-    """Look up an imported symbol and return its stub VA.
-
-    Tries multiple name forms to handle macOS C underscore conventions:
-    _printf (C) → __printf (symbol), but import table has _printf.
-    """
-    stubs_sec = next((s for s in binary.sections if s.name == "__stubs"), None)
-    if stubs_sec is None:
-        return None
-
-    stub_size = stubs_sec.reserved2 or 12
-    stub_count = stubs_sec.size // stub_size
-    stub_start = stubs_sec.reserved1  # index into indirect symbol table
-
-    indirect = _get_indirect_symbols(binary)
-    if indirect is None:
-        return None
-
-    # Build name alternatives (macOS C adds leading underscore)
-    names_to_try = [symbol_name]
-    if symbol_name.startswith("_"):
-        names_to_try.append(symbol_name[1:])       # __printf → _printf
-        if symbol_name.startswith("__"):
-            names_to_try.append(symbol_name[2:])   # __printf → printf
-    else:
-        names_to_try.append("_" + symbol_name)     # printf → _printf
-        names_to_try.append("__" + symbol_name)    # printf → __printf
-
-    for name in names_to_try:
-        for i in range(stub_count):
-            idx = stub_start + i
-            if idx < len(indirect):
-                sym = indirect[idx]
-                if sym.name == name:
-                    return stubs_sec.virtual_address + i * stub_size
-
-    return None
-
-
-def _get_indirect_symbols(binary: lief.MachO.Binary):
-    """Return the indirect symbol table as a list of Symbol objects."""
+def _indirect(binary):
     for cmd in binary.commands:
         if cmd.command == lief.MachO.LoadCommand.TYPE.DYSYMTAB:
             return list(cmd.indirect_symbols)
     return None
 
 
-def _stub_va(binary: lief.MachO.Binary, symbol_name: str) -> int | None:
-    return _resolve_via_symbol_table(binary, symbol_name)
+def _names(symbol_name: str) -> list[str]:
+    return [symbol_name, symbol_name[1:] if symbol_name.startswith("_") else "_" + symbol_name, "__" + symbol_name.lstrip("_")]
+
+
+def _resolve_via_symbol_table(binary: lief.MachO.Binary, symbol_name: str) -> int | None:
+    stubs = next((s for s in binary.sections if s.name == "__stubs"), None)
+    indirect = _indirect(binary)
+    if stubs is None or indirect is None:
+        return None
+    names = _names(symbol_name)
+    size = stubs.reserved2 or 12
+    for i in range(stubs.size // size):
+        idx = stubs.reserved1 + i
+        if idx < len(indirect) and indirect[idx].name in names:
+            return stubs.virtual_address + i * size
+    return None
+
+
+def _resolve_import_slot(binary: lief.MachO.Binary, symbol_name: str) -> int | None:
+    indirect = _indirect(binary)
+    if indirect is None:
+        return None
+    names = set(_names(symbol_name))
+    for section in binary.sections:
+        if section.name not in ("__got", "__la_symbol_ptr", "__nl_symbol_ptr"):
+            continue
+        for i in range(section.size // 8):
+            idx = section.reserved1 + i
+            if idx < len(indirect) and indirect[idx].name in names:
+                return section.virtual_address + i * 8
+    return None
 
 
 def list_available_symbols(binary_path: Path) -> list[dict]:
-    """Return all symbols callable from injected code.
-
-    Includes:
-      - Imported symbols (have stubs in __stubs)
-      - Built-in helpers (arm_logf)
-    """
     binary = lief.parse(str(binary_path))
     if binary is None:
         raise RuntimeError(f"failed to parse {binary_path}")
-
-    symbols: list[dict] = []
-
-    # Built-in helpers (always available)
-    symbols.append({"name": "arm_logf", "address": "built-in", "kind": "builtin",
-                    "signature": "void arm_logf(const char *fmt, ...)",
-                    "desc": "printf-style format string: %d %u %x %s %c %p, plus %ld etc."})
-    symbols.append({"name": "BRANCH_GOTO_DST", "address": "built-in", "kind": "builtin",
-                    "signature": "macro",
-                    "desc": "Branch-Host: jump to the conditional branch target (destination, requires HOOK_BRANCH_HOST 1)"})
-    symbols.append({"name": "BRANCH_GOTO_NEXT", "address": "built-in", "kind": "builtin",
-                    "signature": "macro",
-                    "desc": "Branch-Host: jump to HOOK+4 (fall-through, requires HOOK_BRANCH_HOST 1)"})
-    symbols.append({"name": "BRANCH_GOTO_CONV", "address": "built-in", "kind": "builtin",
-                    "signature": "macro",
-                    "desc": "Branch-Host: jump to convergence point (where both paths meet, requires HOOK_BRANCH_HOST 1)"})
-
-    stubs_sec = next((s for s in binary.sections if s.name == "__stubs"), None)
-    if stubs_sec is None:
-        return symbols
-
-    stub_size = stubs_sec.reserved2 or 12
-    stub_count = stubs_sec.size // stub_size
-    stub_start = stubs_sec.reserved1
-
-    indirect = _get_indirect_symbols(binary)
-
-    for i in range(stub_count):
-        sym_name = None
-        if indirect is not None:
-            idx = stub_start + i
-            if idx < len(indirect):
-                sym = indirect[idx]
-                if sym and sym.name:
-                    sym_name = sym.name
-
-        if sym_name:
-            va = stubs_sec.virtual_address + i * stub_size
-            symbols.append({
-                "name": sym_name,
-                "address": f"0x{va:x}",
-                "kind": "imported",
-                "signature": "",
-                "desc": f"Stub at 0x{va:x}",
-            })
-
-    return symbols
+    out = []
+    stubs = next((s for s in binary.sections if s.name == "__stubs"), None)
+    indirect = _indirect(binary)
+    if stubs is None:
+        return out
+    size = stubs.reserved2 or 12
+    for i in range(stubs.size // size):
+        idx = stubs.reserved1 + i
+        name = indirect[idx].name if indirect and idx < len(indirect) else None
+        if name:
+            va = stubs.virtual_address + i * size
+            out.append({"name": name, "address": f"0x{va:x}", "kind": "imported", "signature": "", "desc": f"0x{va:x}"})
+    return out
 
 
-def _encode_adrp_imm(imm21: int) -> int:
-    """Encode a 21-bit signed immediate into ADRP instruction form."""
-    # immhi = imm21[20:2], immlo = imm21[1:0]
-    immlo = imm21 & 0x3
-    immhi = (imm21 >> 2) & 0x7FFFF
-    return (immlo << 29) | (immhi << 5)
+def _patch_branch26(data: bytearray, off: int, src: int, dst: int) -> None:
+    imm = (dst - src) >> 2
+    if not -(1 << 25) <= imm < (1 << 25):
+        raise ValueError("branch relocation out of range")
+    insn = struct.unpack_from("<I", data, off)[0]
+    struct.pack_into("<I", data, off, (insn & 0xFC000000) | (imm & 0x03FFFFFF))
 
 
-def _encode_add_imm(imm12: int) -> int:
-    """Encode a 12-bit unsigned immediate into ADD instruction form."""
-    return (imm12 & 0xFFF) << 10
+def _patch_page21(data: bytearray, off: int, pc: int, target: int) -> None:
+    diff = ((target & ~0xFFF) - (pc & ~0xFFF)) >> 12
+    imm = diff & 0x1FFFFF
+    insn = struct.unpack_from("<I", data, off)[0]
+    struct.pack_into("<I", data, off, (insn & 0x9F00001F) | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5))
 
 
-def _patch_branch26(data: bytearray, offset: int, src_va: int, dst_va: int) -> None:
-    delta = dst_va - src_va
-    if delta % 4:
-        raise ValueError(f"branch target not 4-byte aligned: src=0x{src_va:x} dst=0x{dst_va:x}")
-    imm26 = delta >> 2
-    if not -(1 << 25) <= imm26 < (1 << 25):
-        raise ValueError(f"branch target out of range: src=0x{src_va:x} dst=0x{dst_va:x} delta={delta}")
-    insn = struct.unpack_from("<I", data, offset)[0]
-    insn = (insn & 0xFC000000) | (imm26 & 0x03FFFFFF)
-    struct.pack_into("<I", data, offset, insn)
+def _patch_pageoff12(data: bytearray, off: int, target: int) -> None:
+    insn = struct.unpack_from("<I", data, off)[0]
+    struct.pack_into("<I", data, off, (insn & 0xFFC003FF) | ((target & 0xFFF) << 10))
 
 
-def _patch_page21(data: bytearray, offset: int, pc_va: int, target_va: int) -> None:
-    """Patch an ADRP instruction's page offset."""
-    pc_page = pc_va & ~0xFFF
-    target_page = target_va & ~0xFFF
-    page_diff = (target_page - pc_page) >> 12
-    insn = struct.unpack_from("<I", data, offset)[0]
-    # Keep opcode + rd; replace immediate fields
-    insn = (insn & 0x9F00001F) | _encode_adrp_imm(page_diff & 0x1FFFFF)
-    struct.pack_into("<I", data, offset, insn)
+def _patch_got_load_pageoff12(data: bytearray, off: int, target: int) -> None:
+    insn = struct.unpack_from("<I", data, off)[0]
+    scale = 8 if (insn & 0xC0000000) == 0xC0000000 else 4
+    imm = (target & 0xFFF) // scale
+    struct.pack_into("<I", data, off, (insn & 0xFFC003FF) | (imm << 10))
 
 
-def _patch_pageoff12(data: bytearray, offset: int, target_va: int) -> None:
-    """Patch an ADD instruction's page offset."""
-    page_off = target_va & 0xFFF
-    insn = struct.unpack_from("<I", data, offset)[0]
-    insn = (insn & 0xFFC003FF) | _encode_add_imm(page_off)
-    struct.pack_into("<I", data, offset, insn)
-
-
-def resolve_plugin_relocs(
-    text_bytes: bytes,
-    extra_bytes: bytes,
-    relocs: list[dict],
-    section_offsets: dict[str, int],
-    binary_path: Path,
-    text_va: int,
-    data_va: int,
-) -> tuple[bytes, bytes]:
-    """Resolve relocations in plugin text, return (patched_text, patched_extra).
-
-    text_va  — VA where __text will be placed in the cave
-    data_va  — VA where r/o data (strings, const) will be placed
-    """
+def resolve_plugin_relocs(text: bytes, extra: bytes, relocs: list[dict], offsets: dict[str, int], binary_path: Path, text_va: int, data_va: int) -> tuple[bytes, bytes]:
     binary = lief.parse(str(binary_path))
     if binary is None:
         raise RuntimeError(f"failed to parse {binary_path}")
-
-    text_buf = bytearray(text_bytes)
-    extra_buf = bytearray(extra_bytes)
-
-    for reloc in relocs:
-        rel_type = reloc["type"]
-        rel_off = reloc["address"]
-        sym_name = reloc["symbol_name"]
-        sym_value = reloc["symbol_value"]
-        sym_section = reloc["symbol_section"]
-
-        # ARM64 relocation type values: BRANCH26=2, PAGE21=3, PAGEOFF12=4
-        if int(rel_type) == 2:  # ARM64_RELOC_BRANCH26
-            if sym_name is None:
-                continue
-            if sym_value == 0 and sym_section is None:
-                # External/undefined symbol — resolve to import stub
-                stub = _resolve_via_symbol_table(binary, sym_name)
-                if stub is None:
-                    available = [s["name"] for s in list_available_symbols(binary_path)]
-                    hint = f"symbol '{sym_name}' not in target binary imports. "
-                    if available:
-                        hint += f"Available builtins: arm_logf. "
-                        hint += f"Imported: {', '.join(available[2:5])}..."
-                    raise RuntimeError(hint)
-                src_va = text_va + rel_off
-                _patch_branch26(text_buf, rel_off, src_va, stub)
-            elif sym_section == "__text":
-                # Local function call within the plugin — patch to cave address
-                src_va = text_va + rel_off
-                dst_va = text_va + sym_value
-                _patch_branch26(text_buf, rel_off, src_va, dst_va)
-
-        elif int(rel_type) == 3:  # ARM64_RELOC_PAGE21
-            if sym_name is None or sym_section is None:
-                continue
-            if sym_section == "__text":
-                target_va = text_va + sym_value
-            elif sym_section in section_offsets:
-                target_va = data_va + section_offsets[sym_section] + sym_value
-            else:
-                continue
-            pc_va = text_va + rel_off
-            _patch_page21(text_buf, rel_off, pc_va, target_va)
-
-        elif int(rel_type) == 4:  # ARM64_RELOC_PAGEOFF12
-            if sym_name is None or sym_section is None:
-                continue
-            if sym_section == "__text":
-                target_va = text_va + sym_value
-            elif sym_section in section_offsets:
-                target_va = data_va + section_offsets[sym_section] + sym_value
-            else:
-                continue
-            _patch_pageoff12(text_buf, rel_off, target_va)
-
+    text_buf = bytearray(text)
+    extra_buf = bytearray(extra)
+    for r in relocs:
+        t, off, name, val, section = int(r["type"]), r["address"], r["symbol_name"], r["symbol_value"], r["symbol_section"]
+        if t == 2 and name:
+            dst = _resolve_via_symbol_table(binary, name) if val == 0 and section is None else text_va + val
+            if dst is None:
+                raise RuntimeError(f"unresolved symbol: {name}")
+            _patch_branch26(text_buf, off, text_va + off, dst)
+        elif t == 3 and section:
+            target = text_va + val if section == "__text" else data_va + offsets.get(section, 0) + val
+            _patch_page21(text_buf, off, text_va + off, target)
+        elif t == 4 and section:
+            target = text_va + val if section == "__text" else data_va + offsets.get(section, 0) + val
+            _patch_pageoff12(text_buf, off, target)
+        elif t == 5 and name:
+            target = _resolve_import_slot(binary, name)
+            if target is None:
+                raise RuntimeError(f"unresolved import slot: {name}")
+            _patch_page21(text_buf, off, text_va + off, target)
+        elif t == 6 and name:
+            target = _resolve_import_slot(binary, name)
+            if target is None:
+                raise RuntimeError(f"unresolved import slot: {name}")
+            _patch_got_load_pageoff12(text_buf, off, target)
     return bytes(text_buf), bytes(extra_buf)
-
-
