@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import sys
 from pathlib import Path
@@ -16,31 +17,33 @@ from flask import (
 PROJECT_ROOT = Path(__file__).resolve().parent
 PLUGINS_DIR = PROJECT_ROOT / "plugins"
 BINARIES_DIR = PROJECT_ROOT / "binaries"
+DATA_DIR = PROJECT_ROOT / "data"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.pipeline import run_pipeline
-from tools.plugin import load_plugin, DEFINE_RE
+from tools.plugin import load_plugin
+from tools.compiler import compile_plugin
 
 
-def _extract_segment_name(source: str) -> str | None:
-    """Quickly extract SEGMENT_NAME from source without full parsing."""
-    for line in source.splitlines():
-        m = DEFINE_RE.match(line)
-        if m and m.group(1) == "SEGMENT_NAME":
-            raw = m.group(2).split("//", 1)[0].strip()
-            return raw[2:] if raw.startswith("__") else raw[1:] if raw.startswith(".") else raw
-    return None
+STANDARD_API_RE = re.compile(r"\b(?:hook|cave|inject_hex|inject_asm)(?:_ex)?\s*\(|\binit\s*\(")
 
 
-def _check_segment_conflict(segment: str, current_name: str | None = None) -> str | None:
-    """Return conflicting plugin name if segment is already used, or None."""
-    existing = _list_plugins()
-    for p in existing:
-        if current_name and p["name"] == current_name:
-            continue
-        if not p.get("error") and p.get("segment") == segment:
-            return p["name"]
-    return None
+def _load_api_docs() -> dict:
+    path = DATA_DIR / "api_docs.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _uses_standard_api(source: str) -> bool:
+    return bool(STANDARD_API_RE.search(source))
+
+
+def _load_standard_actions(path: Path):
+    try:
+        blob = compile_plugin(path)
+        return blob.declarations
+    except Exception:
+        return None
+
 
 app = Flask(__name__)
 
@@ -61,6 +64,10 @@ T = {
         "cancel": "Cancel",
         "edit": "Edit",
         "delete": "Delete",
+        "back": "Back",
+        "hook_api": "Hook API",
+        "show_api": "Show API",
+        "hide_api": "Hide API",
         "segment": "Segment",
         "hook_addr": "Hook Addr",
         "hook_window": "Window",
@@ -119,19 +126,10 @@ T = {
         "edit_plugin": "Edit Plugin",
         "enable": "Enable",
         "priority": "Priority",
-        "validation_seg_name_required": "#define SEGMENT_NAME is required",
-        "validation_seg_name_invalid": "SEGMENT_NAME must be a valid identifier",
-        "validation_seg_size_invalid": "SEGMENT_SIZE must be a valid integer",
-        "validation_seg_size_positive": "SEGMENT_SIZE must be positive",
-        "validation_hook_addr_invalid": "HOOK_ADDR must be a valid hex address",
-        "validation_hook_size_invalid": "HOOK_SIZE must be a valid integer",
-        "validation_hook_size_aligned": "HOOK_SIZE must be 4-byte aligned",
         "validation_plugin_name_required": "plugin name is required",
         "validation_plugin_name_invalid": "invalid plugin filename",
         "validation_plugin_exists": "plugin '{name}' already exists",
         "validation_plugin_not_found": "plugin not found",
-        "segment_conflict_error": "SEGMENT_NAME '{seg}' is already used by '{other}'. Each plugin must use a unique segment name.",
-        "segment_conflict_warn": "Segment '{seg}' is also used by '{other}'",
         "available_symbols": "Available Symbols",
         "reference_binary": "Reference Binary",
         "fuzzy_search": "Fuzzy search...",
@@ -153,6 +151,10 @@ T = {
         "cancel": "取消",
         "edit": "编辑",
         "delete": "删除",
+        "back": "返回",
+        "hook_api": "Hook API",
+        "show_api": "显示 API",
+        "hide_api": "隐藏 API",
         "segment": "段名",
         "hook_addr": "Hook 地址",
         "hook_window": "窗口",
@@ -211,19 +213,10 @@ T = {
         "edit_plugin": "编辑插件",
         "enable": "启用",
         "priority": "优先级",
-        "validation_seg_name_required": "#define SEGMENT_NAME 是必填项",
-        "validation_seg_name_invalid": "SEGMENT_NAME 必须是有效的标识符",
-        "validation_seg_size_invalid": "SEGMENT_SIZE 必须是有效整数",
-        "validation_seg_size_positive": "SEGMENT_SIZE 必须为正数",
-        "validation_hook_addr_invalid": "HOOK_ADDR 必须是有效的十六进制地址",
-        "validation_hook_size_invalid": "HOOK_SIZE 必须是有效整数",
-        "validation_hook_size_aligned": "HOOK_SIZE 必须 4 字节对齐",
         "validation_plugin_name_required": "插件文件名不能为空",
         "validation_plugin_name_invalid": "无效的插件文件名",
         "validation_plugin_exists": "插件 '{name}' 已存在",
         "validation_plugin_not_found": "插件未找到",
-        "segment_conflict_error": "SEGMENT_NAME '{seg}' 已被 '{other}' 使用，不同插件必须使用不同的段名。",
-        "segment_conflict_warn": "段名 '{seg}' 也被 '{other}' 使用",
         "available_symbols": "可用符号",
         "reference_binary": "参考二进制",
         "fuzzy_search": "模糊搜索...",
@@ -286,17 +279,22 @@ def _list_binaries() -> list[dict]:
 def _list_plugins() -> list[dict]:
     plugins = []
     if PLUGINS_DIR.exists():
-        for path in sorted(PLUGINS_DIR.glob("*.c")):
+        for path in sorted(p for p in PLUGINS_DIR.iterdir() if p.suffix == ".cpp"):
             try:
                 spec = load_plugin(path)
+                actions = _load_standard_actions(path)
+                if actions:
+                    spec.actions = actions
+                segment = actions[0].segment if actions else "-"
                 plugins.append({
                     "name": path.name,
                     "stem": path.stem,
-                    "segment": spec.segment_core,
-                    "hook_addr": f"0x{spec.hook_file_off:x}" if spec.hook_file_off else "auto (entrypoint)",
-                    "hook_size": f"0x{spec.hook_size:x} (auto)" if "HOOK_SIZE" not in spec.defines else f"0x{spec.hook_size:x}",
-                    "size": "auto" if spec.segment_size_auto else f"0x{spec.size:x}",
+                    "segment": segment,
+                    "hook_addr": spec.summary(),
+                    "hook_size": "auto",
+                    "size": "auto",
                     "content": path.read_text(encoding="utf-8", errors="ignore"),
+                    "api": "standard" if spec.actions else "empty",
                 })
             except Exception:
                 plugins.append({
@@ -309,41 +307,7 @@ def _list_plugins() -> list[dict]:
 
 
 def _validate_plugin_source(source: str) -> list[str]:
-    errors = []
-    defines: dict[str, str] = {}
-    for line in source.splitlines():
-        m = DEFINE_RE.match(line)
-        if m:
-            defines[m.group(1)] = m.group(2).split("//", 1)[0].strip()
-
-    if "SEGMENT_NAME" not in defines:
-        errors.append(t("validation_seg_name_required"))
-    elif not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", defines["SEGMENT_NAME"]):
-        errors.append(t("validation_seg_name_invalid"))
-
-    if "SEGMENT_SIZE" in defines:
-        try:
-            val = int(defines["SEGMENT_SIZE"], 0)
-            if val <= 0:
-                errors.append(t("validation_seg_size_positive"))
-        except ValueError:
-            errors.append(t("validation_seg_size_invalid"))
-
-    if "HOOK_ADDR" in defines:
-        try:
-            int(defines["HOOK_ADDR"], 0)
-        except ValueError:
-            errors.append(t("validation_hook_addr_invalid"))
-
-    if "HOOK_SIZE" in defines:
-        try:
-            val = int(defines["HOOK_SIZE"], 0)
-            if val % 4 != 0:
-                errors.append(t("validation_hook_size_aligned"))
-        except ValueError:
-            errors.append(t("validation_hook_size_invalid"))
-
-    return errors
+    return []
 
 
 # ── routes ──────────────────────────────────────────────
@@ -355,7 +319,7 @@ def index():
 
 @app.route("/plugins")
 def plugins_page():
-    return render_template("plugins.html", plugins=_list_plugins(), binaries=_list_binaries())
+    return render_template("plugins.html", plugins=_list_plugins(), binaries=_list_binaries(), api_docs=_load_api_docs())
 
 
 @app.route("/files")
@@ -365,6 +329,11 @@ def files_page():
 @app.route("/pipeline")
 def pipeline_page():
     return render_template("pipeline.html", binaries=_list_binaries(), plugins=_list_plugins())
+
+
+@app.route("/api/docs", methods=["GET"])
+def api_docs():
+    return jsonify(_load_api_docs())
 
 
 # ── API ─────────────────────────────────────────────────
@@ -381,14 +350,19 @@ def api_plugin_get(name: str):
         return jsonify({"error": "plugin not found"}), 404
     try:
         spec = load_plugin(path)
+        actions = _load_standard_actions(path)
+        if actions:
+            spec.actions = actions
+        segment = actions[0].segment if actions else "-"
         return jsonify({
             "name": path.name,
             "stem": path.stem,
             "content": path.read_text(encoding="utf-8", errors="ignore"),
-            "segment": spec.segment_core,
-            "hook_addr": f"0x{spec.hook_file_off:x}" if spec.hook_file_off else "auto (entrypoint)",
-            "hook_size": f"0x{spec.hook_size:x}",
-            "size": "auto" if spec.segment_size_auto else f"0x{spec.size:x}",
+            "segment": segment,
+            "hook_addr": spec.summary(),
+            "hook_size": "auto",
+            "size": "auto",
+            "api": "standard" if spec.actions else "empty",
         })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -402,20 +376,14 @@ def api_plugin_create():
 
     if not name:
         return jsonify({"error": t("validation_plugin_name_required")}), 400
-    if not name.endswith(".c"):
-        name += ".c"
-    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*\.c$", name):
+    if "." not in name:
+        name += ".cpp"
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*\.cpp$", name):
         return jsonify({"error": t("validation_plugin_name_invalid")}), 400
 
     errors = _validate_plugin_source(content)
     if errors:
         return jsonify({"error": "\n".join(errors)}), 400
-
-    new_seg = _extract_segment_name(content)
-    if new_seg:
-        conflict = _check_segment_conflict(new_seg)
-        if conflict:
-            return jsonify({"error": t("segment_conflict_error").format(seg=new_seg, other=conflict)}), 409
 
     path = PLUGINS_DIR / name
     if path.exists():
@@ -440,13 +408,11 @@ def api_plugin_update(name: str):
     if errors:
         return jsonify({"error": "\n".join(errors)}), 400
 
-    new_seg = _extract_segment_name(content)
-    if new_seg:
-        conflict = _check_segment_conflict(new_seg, current_name=name)
-        if conflict:
-            return jsonify({"error": t("segment_conflict_error").format(seg=new_seg, other=conflict)}), 409
-
     if new_name and new_name != name:
+        if "." not in new_name:
+            new_name += ".cpp"
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*\.cpp$", new_name):
+            return jsonify({"error": t("validation_plugin_name_invalid")}), 400
         new_path = PLUGINS_DIR / new_name
         if new_path.exists():
             return jsonify({"error": t("validation_plugin_exists").format(name=new_name)}), 409
@@ -574,7 +540,7 @@ def api_binary_symbols():
 
 @app.route("/api/plugins/compile-check", methods=["POST"])
 def api_compile_check():
-    """Quick compile a C source snippet without running full pipeline."""
+    """Quick compile a C++ plugin snippet without running full pipeline."""
     import subprocess
     import tempfile
 
@@ -585,33 +551,31 @@ def api_compile_check():
         return jsonify({"error": "no source provided"}), 400
 
     with tempfile.TemporaryDirectory(prefix="armcave-check-") as td:
-        src = Path(td) / "check.c"
+        src = Path(td) / "check.cpp"
         src.write_text(source, encoding="utf-8")
         try:
-            result = subprocess.run(
-                [
-                    "clang", "-target", "arm64-apple-macosx13.0",
-                    "-c", "-Oz", "-fno-stack-protector",
-                    "-I", str(PROJECT_ROOT / "plugins"),
-                    "-include", "armcave.h",
-                    "-Wno-implicit-function-declaration",
-                    "-fsyntax-only",
-                    str(src),
-                ],
-                capture_output=True, text=True, timeout=15,
-            )
-            if result.returncode == 0:
-                # also check segment conflict
-                seg = _extract_segment_name(source)
-                seg_warning = None
-                if seg:
-                    current = data.get("current_name")
-                    conflict = _check_segment_conflict(seg, current_name=current)
-                    if conflict:
-                        seg_warning = t("segment_conflict_warn").format(seg=seg, other=conflict)
-                return jsonify({"ok": True, "message": "Compilation successful", "segment_conflict": seg_warning})
-            else:
-                return jsonify({"ok": False, "error": result.stderr.strip()}), 200
+            from tools.compiler import compile_plugin
+            blob = compile_plugin(src)
+            actions = [
+                {
+                    "kind": a.kind,
+                    "address": "entry" if a.address is None else f"0x{a.address:x}",
+                    "handler": a.handler,
+                    "register_args": a.register_args or [],
+                    "size": a.size,
+                    "data": a.data,
+                    "segment": a.segment,
+                }
+                for a in blob.declarations
+            ]
+            return jsonify({
+                "ok": True,
+                "message": "Compilation successful",
+                "segment_conflict": None,
+                "actions": actions,
+            })
+        except subprocess.CalledProcessError as exc:
+            return jsonify({"ok": False, "error": (exc.stderr or str(exc)).strip()}), 200
         except subprocess.TimeoutExpired:
             return jsonify({"ok": False, "error": "Compilation timed out"}), 200
         except FileNotFoundError:

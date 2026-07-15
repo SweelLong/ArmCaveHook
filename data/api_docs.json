@@ -1,0 +1,32 @@
+{
+  "plugin_api": [
+    {"name": "#include \"armcave.h\"", "kind": "include", "desc": "插件必须显式包含标准库头文件。"},
+    {"name": "#define SEGMENT_NAME name", "kind": "segment", "desc": "声明默认 cave 名称。"},
+    {"name": "void init(void)", "kind": "entry", "desc": "插件声明入口，二进制修改写在这里。"},
+    {"name": "cave(handler, ...)", "kind": "segment", "desc": "只把 handler 写入 cave 区域，不修改目标二进制控制流。"},
+    {"name": "hook(addr, handler, ...)", "kind": "hook", "desc": "函数替代 hook，从目标地址跳到 handler。"},
+    {"name": "inject_hex(addr, hex)", "kind": "patch", "desc": "按虚拟地址写入十六进制机器码。"},
+    {"name": "inject_asm(addr, text)", "kind": "patch", "desc": "按虚拟地址汇编并写入 AArch64 指令。"},
+    {"name": "target_fn(ret, name, args, symbol)", "kind": "symbol", "desc": "按符号名声明目标二进制里的函数。"},
+    {"name": "target_obj(name, symbol)", "kind": "symbol", "desc": "按符号名声明目标二进制里的通用对象。"},
+    {"name": "target_obj(type, name, symbol)", "kind": "symbol", "desc": "按符号名声明目标二进制里的强类型对象。"},
+    {"name": "target_obj_fn(name, symbol, ...)", "kind": "symbol", "desc": "按符号名声明目标对象函数。"},
+    {"name": "target_obj_call(fn, obj, ...)", "kind": "symbol", "desc": "调用目标对象函数。"},
+    {"name": "target_call(ret, addr, args, ...)", "kind": "symbol", "desc": "按地址快速调用目标内部函数。"},
+    {"name": "logf(fmt, ...)", "kind": "stdlib", "desc": "标准库日志函数。"},
+    {"name": "vector<T>", "kind": "stdlib", "desc": "固定容量 C++ 向量容器。"},
+    {"name": "string", "kind": "stdlib", "desc": "固定容量 C++ 字符串容器。"}
+  ],
+  "web_api": [
+    {"method": "GET", "path": "/api/docs", "desc": "读取框架和 Web API 文档。"},
+    {"method": "GET", "path": "/api/plugins", "desc": "列出插件。"},
+    {"method": "GET", "path": "/api/plugins/<name>", "desc": "读取插件。"},
+    {"method": "POST", "path": "/api/plugins", "desc": "创建插件。"},
+    {"method": "PUT", "path": "/api/plugins/<name>", "desc": "更新插件。"},
+    {"method": "DELETE", "path": "/api/plugins/<name>", "desc": "删除插件。"},
+    {"method": "POST", "path": "/api/plugins/compile-check", "desc": "编译并检查 hook 声明。"},
+    {"method": "POST", "path": "/api/pipeline/run", "desc": "执行注入流水线。"},
+    {"method": "POST", "path": "/api/upload", "desc": "上传二进制。"},
+    {"method": "GET", "path": "/api/download/<name>", "desc": "下载修补后的二进制。"}
+  ]
+}

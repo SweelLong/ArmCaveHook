@@ -404,29 +404,48 @@ if (document.getElementById("file-mgmt-list")) {
   renderFileMgmtList();
 }
 
-// ── plugin editor (modal) ─────────────────────
+// ── plugin editor ─────────────────────────────
 
 var editingPlugin = null;
-var editorModal = document.getElementById("editor-modal");
+var pluginListView = document.getElementById("plugin-list-view");
+var pluginEditorView = document.getElementById("plugin-editor-view");
 
-function openModal(title) {
-  document.getElementById("modal-title").textContent = title;
-  editorModal.style.display = "";
-  document.body.style.overflow = "hidden";
+function setApiPanel(open) {
+  var btn = document.getElementById("btn-api-toggle");
+  var panel = document.getElementById("hook-api-panel");
+  if (!btn || !panel) return;
+  panel.hidden = !open;
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  btn.textContent = open ? _("hide_api") : _("hook_api");
+}
+
+function openEditor(title) {
+  document.getElementById("editor-title").textContent = title;
+  setApiPanel(false);
+  if (pluginListView) pluginListView.style.display = "none";
+  if (pluginEditorView) pluginEditorView.style.display = "";
+  window.scrollTo({ top: 0, behavior: "auto" });
   setTimeout(function () { document.getElementById("plugin-content").focus(); }, 150);
 }
 
-function closeModal() {
-  editorModal.style.display = "none";
-  document.body.style.overflow = "";
+function closeEditor() {
+  if (pluginEditorView) pluginEditorView.style.display = "none";
+  if (pluginListView) pluginListView.style.display = "";
   editingPlugin = null;
 }
 
-document.getElementById("btn-modal-close").addEventListener("click", closeModal);
-document.getElementById("btn-cancel-edit").addEventListener("click", closeModal);
-editorModal.addEventListener("click", function (e) {
-  if (e.target === editorModal) closeModal();
-});
+var backPlugin = document.getElementById("btn-back-plugin");
+if (backPlugin) backPlugin.addEventListener("click", closeEditor);
+var cancelEdit = document.getElementById("btn-cancel-edit");
+if (cancelEdit) cancelEdit.addEventListener("click", closeEditor);
+
+var apiToggle = document.getElementById("btn-api-toggle");
+if (apiToggle) {
+  apiToggle.addEventListener("click", function () {
+    setApiPanel(apiToggle.getAttribute("aria-expanded") !== "true");
+  });
+  setApiPanel(false);
+}
 
 async function editPlugin(name) {
   var resp = await fetch("/api/plugins/" + name);
@@ -439,7 +458,7 @@ async function editPlugin(name) {
   document.getElementById("plugin-errors").style.display = "none";
   var cr = document.getElementById("compile-result");
   if (cr) { cr.style.display = "none"; cr.textContent = ""; }
-  openModal(_("edit_plugin"));
+  openEditor(_("edit_plugin"));
   updateLineNumbers();
   highlightSyntax();
   setTimeout(autoLoadSymbols, 200);
@@ -472,7 +491,7 @@ if (btnNew) {
     document.getElementById("plugin-errors").style.display = "none";
     var cr = document.getElementById("compile-result");
     if (cr) { cr.style.display = "none"; cr.textContent = ""; }
-    openModal(_("new_plugin"));
+    openEditor(_("new_plugin"));
     updateLineNumbers();
     highlightSyntax();
     setTimeout(autoLoadSymbols, 200);
@@ -677,7 +696,14 @@ if (btnCheck) {
       var data = await resp.json();
       if (data.ok) {
         resultDiv.className = data.segment_conflict ? "result-warn" : "result-ok";
-        resultDiv.textContent = data.segment_conflict || _("compile_ok");
+        var actionText = "";
+        if (data.actions && data.actions.length) {
+          actionText = "\n" + data.actions.map(function (a) {
+            var args = a.register_args && a.register_args.length ? " [" + a.register_args.join(", ") + "]" : "";
+            return a.kind + " " + a.address + (a.handler ? " -> " + a.handler : "") + args;
+          }).join("\n");
+        }
+        resultDiv.textContent = (data.segment_conflict || _("compile_ok")) + actionText;
         toast(data.segment_conflict || _("compile_success_msg"), data.segment_conflict ? "error" : "success");
       } else {
         resultDiv.className = "result-err";
