@@ -89,11 +89,10 @@ def _compile_source(path: Path, out_dir: Path) -> Path:
 
 def _apply_segment(actions: list[HookAction], segment: str | None) -> list[HookAction]:
     found = segment or next((a.segment for a in actions if a.kind == "segment" and a.segment not in ("auto", "armcave", "")), None)
-    if not found:
-        return [a for a in actions if a.kind != "segment"]
-    for action in actions:
-        if action.kind != "segment" and action.segment in ("auto", "armcave", ""):
-            action.segment = found
+    if found:
+        for action in actions:
+            if action.kind == "cave" and action.segment in ("auto", "armcave", ""):
+                action.segment = found
     return [a for a in actions if a.kind != "segment"]
 
 
@@ -126,9 +125,9 @@ def extract_cave_asm() -> tuple[bytes, bytes, bytes]:
         obj = lief.parse(str(out))
         sec = _sec(obj, "__caveasm") if obj else None
         data = bytes(sec.content) if sec else b""
-        if len(data) < 12:
+        if len(data) < 16:
             raise RuntimeError("__caveasm section not found")
-        return data[:4], data[4:8], data[8:12]
+        return data[:8], data[8:12], data[12:16]
 
 
 def assemble_aarch64(source: str) -> bytes:

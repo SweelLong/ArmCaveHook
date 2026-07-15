@@ -17,6 +17,20 @@ def _names(symbol_name: str) -> list[str]:
     return [symbol_name, symbol_name[1:] if symbol_name.startswith("_") else "_" + symbol_name, "__" + symbol_name.lstrip("_")]
 
 
+def _resolve_armcave_va(symbol_name: str) -> int | None:
+    for name in _names(symbol_name):
+        marker = "armcave_va_"
+        idx = name.find(marker)
+        if idx < 0:
+            continue
+        raw = name[idx + len(marker):]
+        try:
+            return int(raw, 0)
+        except ValueError:
+            return None
+    return None
+
+
 def _resolve_via_symbol_table(binary: lief.MachO.Binary, symbol_name: str) -> int | None:
     stubs = next((s for s in binary.sections if s.name == "__stubs"), None)
     indirect = _indirect(binary)
@@ -101,7 +115,12 @@ def resolve_plugin_relocs(text: bytes, extra: bytes, relocs: list[dict], offsets
     for r in relocs:
         t, off, name, val, section = int(r["type"]), r["address"], r["symbol_name"], r["symbol_value"], r["symbol_section"]
         if t == 2 and name:
-            dst = _resolve_via_symbol_table(binary, name) if val == 0 and section is None else text_va + val
+            if val == 0 and section is None:
+                dst = _resolve_armcave_va(name)
+                if dst is None:
+                    dst = _resolve_via_symbol_table(binary, name)
+            else:
+                dst = text_va + val
             if dst is None:
                 raise RuntimeError(f"unresolved symbol: {name}")
             _patch_branch26(text_buf, off, text_va + off, dst)

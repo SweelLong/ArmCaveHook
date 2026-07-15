@@ -35,16 +35,7 @@ def encode_bl(src_va: int, dst_va: int) -> int:
 
 
 def _branch(src_va: int, dst_va: int, scratch: int = 16) -> bytes:
-    try:
-        return encode_b(src_va, dst_va).to_bytes(4, "little")
-    except ValueError:
-        src_page = src_va & ~0xFFF
-        dst_page = dst_va & ~0xFFF
-        imm21 = ((dst_page - src_page) >> 12) & 0x1FFFFF
-        adrp = 0x90000000 | scratch | ((imm21 & 3) << 29) | (((imm21 >> 2) & 0x7FFFF) << 5)
-        add = 0x91000000 | scratch | (scratch << 5) | ((dst_va & 0xFFF) << 10)
-        br = 0xD61F0000 | (scratch << 5)
-        return adrp.to_bytes(4, "little") + add.to_bytes(4, "little") + br.to_bytes(4, "little")
+    return encode_b(src_va, dst_va).to_bytes(4, "little")
 
 
 def _target(insn: int, va: int) -> int | None:
@@ -87,7 +78,7 @@ def _patched(original: bytes, hook_va: int, cave_va: int) -> bytes:
 
 
 def _patched_size(original: bytes) -> int:
-    return len(_patched(original, 0, 0))
+    return len(original)
 
 
 def _reg(name: str) -> tuple[int, bool]:
@@ -129,8 +120,10 @@ def build_hook_cave(cave_va: int, hook_va: int, hook_size: int, original: bytes,
                 break
         if target_dst is None:
             raise ValueError("branch hook needs a branch instruction")
-    patched = original if detour else _patched(original, hook_va, cave_va + 4 + n * 4 + 4)
-    control_size = 4 + n * 4 + 4 + (4 if detour else len(patched) + 4)
+    calls_va = cave_va + len(save)
+    resume_va = calls_va + n * 4 + len(restore)
+    patched = original if detour else _patched(original, hook_va, resume_va)
+    control_size = len(save) + n * 4 + len(restore) + (len(ret) if detour else len(patched) + 4)
     offsets, chunks = [], []
     cur = control_size
     for blob in plugin_blobs:
@@ -157,9 +150,9 @@ def build_hook_cave(cave_va: int, hook_va: int, hook_size: int, original: bytes,
             cur += len(built)
     out = bytearray(save)
     for i, off in enumerate(offsets):
-        out += encode_bl(cave_va + 4 + i * 4, cave_va + off).to_bytes(4, "little")
+        out += encode_bl(calls_va + i * 4, cave_va + off).to_bytes(4, "little")
     out += restore
-    out += ret if detour else patched + _branch(cave_va + 4 + n * 4 + 4 + len(patched), hook_va + hook_size)
+    out += ret if detour else patched + _branch(resume_va + len(patched), hook_va + hook_size)
     for chunk in chunks:
         out += chunk
         out += b"\x00" * ((-len(out)) % 4)
@@ -215,7 +208,8 @@ def patch_hook_macho(binary_path: Path, output_path: Path, hook_file_off: int, h
     binary = lief.parse(str(binary_path))
     if binary is None or not isinstance(binary, lief.MachO.Binary):
         raise RuntimeError(f"failed to parse {binary_path}")
-    control = 4 + len(plugin_blobs) * 4 + 4 + (4 if detour else _patched_size(original) + 4)
+    save, restore, ret = _frame()
+    control = len(save) + len(plugin_blobs) * 4 + len(restore) + (len(ret) if detour else _patched_size(original) + 4)
     size = control
     for b in plugin_blobs:
         size += b.total_bytes if hasattr(b, "total_bytes") else len(b)

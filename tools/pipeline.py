@@ -124,12 +124,13 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
             if addr is None:
                 raise ValueError(f"{spec.name}: {action.kind} missing address")
             action.address = addr
-            action.segment = _seg(spec.name, i, action)
             if action.kind in ("hex", "bytes", "asm", "clear_imm12"):
                 direct.append(action)
             elif action.kind == "hook":
+                action.segment = _seg(spec.name, i, action)
                 hooks[addr].append((spec, blob, action))
             elif action.kind == "pre_hook":
+                action.segment = _seg(spec.name, i, action)
                 pre_hooks[addr].append((spec, blob, action))
             else:
                 raise ValueError(f"{spec.name}: unsupported action {action.kind}")
@@ -146,6 +147,7 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
             print(f"{a.kind}: 0x{a.address:x} size={a.size or 'auto'}")
         return True
     for _, blob, action in caves:
+        action.segment = _seg(action.segment or "", 0, action)
         cave_va = _add_cave(input_path, output_path, action.segment, blob, action)
         print(f"[cave] segment={action.segment} va=0x{cave_va:x} handler={action.handler}")
     for action in direct:

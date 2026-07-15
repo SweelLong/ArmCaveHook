@@ -35,7 +35,7 @@ void init(void) {
 }
 ```
 
-`SEGMENT_NAME` 是新增 cave 名称。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。段大小由框架根据编译后的代码、常量数据、重定位和 wrapper 自动计算。一个插件里有多个 `hook`/`pre_hook`/`cave` 时建议省略 `SEGMENT_NAME`，让框架为每个 action 生成独立段名。
+`SEGMENT_NAME` 是显式 cave 名称。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。段大小由框架根据编译后的代码、常量数据、重定位和 wrapper 自动计算。`hook`/`pre_hook` 会按 action 自动生成独立段名，避免多个 hook 共用同一个 cave；`SEGMENT_NAME` 只会作为未显式命名的 `cave` 默认段名。
 
 ## 标准 API
 
@@ -48,6 +48,7 @@ void init(void) {
 | `inject_hex(addr, "hex")` | 写入十六进制机器码。 |
 | `patch_imm12(addr, expected)` | 当前指令等于 `expected` 时清掉 ADD/SUB imm12 位。 |
 | `target_fn(ret, name, args, symbol)` | 按符号名声明目标二进制里的函数。 |
+| `target_va_fn(ret, name, args, addr)` | 按固定虚拟地址声明目标二进制里的函数，patch 后生成相对 `BL/B` relocation。 |
 | `target_obj(name, symbol)` | 按符号名声明目标二进制里的通用对象。 |
 | `target_obj(type, name, symbol)` | 按符号名声明目标二进制里的强类型对象。 |
 | `target_obj_fn(name, symbol, ...)` | 按符号名声明目标对象函数。 |
@@ -90,7 +91,7 @@ void init(void) {
 
 `inject_asm` 用来写 AArch64 汇编文本，`inject_hex` 用来写已经确认好的机器码。
 
-默认跳转使用 AArch64 `B` 指令。`B` 是 26-bit 相对跳转，按 4 字节指令对齐计算，范围是当前位置前后 128 MiB。
+默认跳转使用 AArch64 `B` 指令。`B` 是 26-bit 相对跳转，按 4 字节指令对齐计算，范围是当前位置前后 128 MiB。Mach-O hook cave 入口会先执行 `XPACLRI` 再保存 `x29/x30`，用于清理带 PAC 签名位的返回地址，避免 detour hook 在 `RET` 时跳到签名后的非规范地址。框架不会在普通 hook 路径中自动生成 `BR` 远跳；目标超出 `B/BL` 范围时会报错。
 
 ## 目标函数调用
 
@@ -111,7 +112,17 @@ extern "C" int hook_func(int a, int b) {
 }
 ```
 
-目标内部函数只有地址时可以用 `target_call`（按虚拟地址）或 `target_call_offset`（按文件偏移）：
+目标内部函数只有固定虚拟地址时，优先用 `target_va_fn` 声明。它让编译器生成普通函数调用 relocation，patch 阶段会把目标解析为固定 VA，最终通常是相对 `BL`，尾调用可能优化成相对 `B`：
+
+```cpp
+target_va_fn(int, internal_add, (int, int), 0x100012340);
+
+static int call_internal(int a, int b) {
+    return internal_add(a, b);
+}
+```
+
+也可以用 `target_call`（按虚拟地址）或 `target_call_offset`（按文件偏移）快速调用：
 
 ```cpp
 static int call_internal(int a, int b) {
@@ -128,7 +139,7 @@ target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
 
 `ARMCAVE_BASE` 默认为 `0x100000000`（标准 arm64 Mach-O），可在插件中 `#define ARMCAVE_BASE` 覆盖。
 
-使用这类接口时要保证地址、符号名、ASLR 状态、调用约定和参数类型正确。
+使用这类接口时要保证地址、符号名、ASLR 状态、调用约定和参数类型正确。`target_call`/`target_call_offset` 是 C++ 函数指针调用，编译后会通过寄存器间接调用；`target_va_fn` 更适合固定 VA 的内部函数。
 
 ## 虚表调用
 
