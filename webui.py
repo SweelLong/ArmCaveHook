@@ -20,7 +20,7 @@ BINARIES_DIR = PROJECT_ROOT / "binaries"
 DATA_DIR = PROJECT_ROOT / "data"
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.pipeline import run_pipeline
+from tools.pipeline import run_pipeline, _seg
 from tools.plugin import load_plugin
 from tools.compiler import compile_plugin
 
@@ -43,6 +43,29 @@ def _load_standard_actions(path: Path):
         return blob.declarations
     except Exception:
         return None
+
+
+def _resolved_action_segment(plugin_stem: str, index: int, action) -> str:
+    if action.kind in ("hook", "pre_hook"):
+        return _seg(plugin_stem, index, action)
+    if action.kind == "cave":
+        return action.segment if action.segment not in ("auto", "armcave", "") else _seg(plugin_stem, index, action)
+    return "-"
+
+
+def _segment_summary(plugin_stem: str, actions) -> str:
+    if not actions:
+        return "-"
+    segments = []
+    for i, action in enumerate(actions):
+        seg = _resolved_action_segment(plugin_stem, i, action)
+        if seg != "-" and seg not in segments:
+            segments.append(seg)
+    if not segments:
+        return "-"
+    if len(segments) <= 2:
+        return ", ".join(segments)
+    return f"{segments[0]}, {segments[1]} +{len(segments) - 2}"
 
 
 app = Flask(__name__)
@@ -285,7 +308,7 @@ def _list_plugins() -> list[dict]:
                 actions = _load_standard_actions(path)
                 if actions:
                     spec.actions = actions
-                segment = actions[0].segment if actions else "-"
+                segment = _segment_summary(path.stem, actions)
                 plugins.append({
                     "name": path.name,
                     "stem": path.stem,
@@ -353,7 +376,7 @@ def api_plugin_get(name: str):
         actions = _load_standard_actions(path)
         if actions:
             spec.actions = actions
-        segment = actions[0].segment if actions else "-"
+        segment = _segment_summary(path.stem, actions)
         return jsonify({
             "name": path.name,
             "stem": path.stem,
@@ -564,9 +587,9 @@ def api_compile_check():
                     "register_args": a.register_args or [],
                     "size": a.size,
                     "data": a.data,
-                    "segment": a.segment,
+                    "segment": _resolved_action_segment(src.stem, i, a),
                 }
-                for a in blob.declarations
+                for i, a in enumerate(blob.declarations)
             ]
             return jsonify({
                 "ok": True,
