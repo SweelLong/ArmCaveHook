@@ -58,6 +58,24 @@ def _patch_payload(action: HookAction) -> bytes:
     raise ValueError(f"unsupported patch action: {action.kind}")
 
 
+def _clear_imm12(output_path: Path, action: HookAction) -> bool:
+    if action.address is None:
+        raise ValueError("clear_imm12 missing address")
+    expected = int(action.data, 0)
+    binary = _parse(output_path)
+    off = _off(binary, action.address)
+    data = bytearray(output_path.read_bytes())
+    if off + 4 > len(data):
+        raise ValueError(f"patch out of range: 0x{action.address:x}")
+    current = int.from_bytes(data[off:off + 4], "little")
+    if current != expected:
+        print(f"[clear_imm12:skip] 0x{action.address:x} current=0x{current:08x} expected=0x{expected:08x}")
+        return False
+    data[off:off + 4] = (expected & ~0x003FFC00).to_bytes(4, "little")
+    output_path.write_bytes(data)
+    return True
+
+
 def _add_cave(input_path: Path, output_path: Path, segment: str, blob, action: HookAction) -> int:
     item = blob.for_action(action)
     size = 4 + item.total_bytes
@@ -95,6 +113,7 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
     caves = []
     direct = []
     hooks = defaultdict(list)
+    pre_hooks = defaultdict(list)
     for spec, blob in compiled:
         for i, action in enumerate(blob.declarations):
             if action.kind == "cave":
@@ -106,16 +125,21 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
                 raise ValueError(f"{spec.name}: {action.kind} missing address")
             action.address = addr
             action.segment = _seg(spec.name, i, action)
-            if action.kind in ("hex", "bytes", "asm"):
+            if action.kind in ("hex", "bytes", "asm", "clear_imm12"):
                 direct.append(action)
             elif action.kind == "hook":
                 hooks[addr].append((spec, blob, action))
+            elif action.kind == "pre_hook":
+                pre_hooks[addr].append((spec, blob, action))
             else:
                 raise ValueError(f"{spec.name}: unsupported action {action.kind}")
     if dry_run:
         for _, _, a in caves:
             print(f"cave: segment={a.segment} handler={a.handler}")
         for actions in hooks.values():
+            for _, _, a in actions:
+                print(f"{a.kind}: 0x{a.address:x} segment={a.segment} handler={a.handler}")
+        for actions in pre_hooks.values():
             for _, _, a in actions:
                 print(f"{a.kind}: 0x{a.address:x} segment={a.segment} handler={a.handler}")
         for a in direct:
@@ -125,9 +149,34 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
         cave_va = _add_cave(input_path, output_path, action.segment, blob, action)
         print(f"[cave] segment={action.segment} va=0x{cave_va:x} handler={action.handler}")
     for action in direct:
+        if action.kind == "clear_imm12":
+            changed = _clear_imm12(output_path, action)
+            print(f"[clear_imm12] 0x{action.address:x} changed={int(changed)}")
+            continue
         payload = _patch_payload(action)
         print(f"[{action.kind}] 0x{action.address:x} size={len(payload)}")
         patch_bytes_va(output_path, output_path, action.address, payload)
+    for hook_va, group in pre_hooks.items():
+        binary = _parse(output_path)
+        hook_size = 4
+        original = bytes(binary.get_content_from_virtual_address(hook_va, hook_size))
+        if len(original) != hook_size:
+            raise ValueError(f"cannot read hook window at 0x{hook_va:x}")
+        seg = group[0][2].segment
+        blobs = [blob.for_action(a) for _, blob, a in group]
+        print(f"[pre_hook] 0x{hook_va:x} segment={seg} handlers={len(blobs)}")
+        if isinstance(binary, lief.MachO.Binary):
+            patch_hook_macho(output_path, output_path, _off(binary, hook_va), hook_size, original, blobs, seg, False, False)
+        else:
+            control = 4 + len(blobs) * 4 + 4 + len(original) + 4
+            size = control + sum(b.total_bytes + (4 * len(b.register_args) + 4 if b.register_args else 0) for b in blobs)
+            add_segment(output_path, SegmentPlan(seg, size, b""), output_path)
+            binary = _parse(output_path)
+            cave_va = seg_va(binary, seg, size)
+            cave = build_hook_cave(cave_va, hook_va, hook_size, original, blobs, input_path, False, False)
+            add_segment(output_path, SegmentPlan(seg, len(cave), cave), output_path)
+            patch_hook_window(output_path, output_path, hook_va, hook_size, cave_va)
+        print(f"[done] 0x{hook_va:x}")
     for hook_va, group in hooks.items():
         binary = _parse(output_path)
         hook_size = 4

@@ -18,7 +18,7 @@ ArmCaveHook 是一个 AArch64 静态 hook 框架。插件使用 `.cpp` 编写，
 #include "armcave.h"
 ```
 
-顶层只放 include、`#define SEGMENT_NAME`、类型声明、函数声明、全局变量、函数定义和 `init(void)`。除变量和声明外，不要把执行逻辑写在函数外面。对二进制的任何修改都写进 `init(void)`。
+顶层只放 include、可选的 `#define SEGMENT_NAME`、类型声明、函数声明、全局变量、函数定义和 `init(void)`。除变量和声明外，不要把执行逻辑写在函数外面。对二进制的任何修改都写进 `init(void)`。
 
 ```cpp
 #include "armcave.h"
@@ -35,16 +35,18 @@ void init(void) {
 }
 ```
 
-`SEGMENT_NAME` 是新增 cave 名称。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。段大小由框架根据编译后的代码、常量数据、重定位和 wrapper 自动计算。
+`SEGMENT_NAME` 是新增 cave 名称。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。段大小由框架根据编译后的代码、常量数据、重定位和 wrapper 自动计算。一个插件里有多个 `hook`/`pre_hook`/`cave` 时建议省略 `SEGMENT_NAME`，让框架为每个 action 生成独立段名。
 
 ## 标准 API
 
 | API | 作用 |
 |---|---|
 | `hook(addr, handler, ...)` | 函数替代 hook，从目标地址跳到 handler。 |
+| `pre_hook(addr, handler, ...)` | 前置 hook，先调用 handler，再执行被覆盖的原指令并回到原函数。 |
 | `cave(handler, ...)` | 只把 handler 写入 cave，不修改目标控制流。 |
 | `inject_asm(addr, "instruction")` | 汇编 AArch64 指令并写入虚拟地址。 |
 | `inject_hex(addr, "hex")` | 写入十六进制机器码。 |
+| `patch_imm12(addr, expected)` | 当前指令等于 `expected` 时清掉 ADD/SUB imm12 位。 |
 | `target_fn(ret, name, args, symbol)` | 按符号名声明目标二进制里的函数。 |
 | `target_obj(name, symbol)` | 按符号名声明目标二进制里的通用对象。 |
 | `target_obj(type, name, symbol)` | 按符号名声明目标二进制里的强类型对象。 |
@@ -55,12 +57,24 @@ void init(void) {
 | `ARMCAVE_BASE` | 目标二进制加载基址，默认 `0x100000000`。 |
 | `StdString` | Apple libc++ `std::string` 布局（ARM64 24 字节，SSO 22 字符）。 |
 | `vt_call(obj, idx, arg)` | 调用对象虚表第 `idx` 项，返回 `StdString`（ARM64 sret x8 自动处理）。 |
+| `read<T>(addr)` / `write<T>(addr, value)` | 读写目标进程内存。 |
+| `vcall(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
+| `object_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
 | `logf(fmt, ...)` | 简单日志输出。 |
 | `vector<T>` | 固定容量 C++ 容器，默认容量 32。 |
 | `string` | 固定容量字符串，容量 127 字节。 |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | 基础类型别名。 |
 
-`hook` 和 `cave` 后面的寄存器参数可选。传入寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
+`hook`、`pre_hook` 和 `cave` 后面的寄存器参数可选。传入寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
+
+`hook` 和 `pre_hook` 都是静态写跳转到 cave，但控制流不同：
+
+```text
+hook:     target -> handler -> ret
+pre_hook: target -> handler -> 原始被覆盖指令 -> target + 4
+```
+
+因此 `hook` 适合替换一个函数或入口点，`pre_hook` 适合在原逻辑前插入一段代码并继续执行原函数。`pre_hook` 的 hook 点应放在目标函数已经把关键状态保存到 callee-saved 寄存器之后；handler 应遵守 AArch64 调用约定，不要依赖 caller-saved 寄存器在返回后保持不变。
 
 ## 指令注入
 
@@ -204,3 +218,4 @@ http://127.0.0.1:5000
 
 - [ ] 支持长范围跳转。长跳转需要多条指令，例如加载绝对地址后 `br`，会占用更大的覆盖窗口，也会带来原指令保存、回跳和对齐限制。
 - [ ] 扩展其他架构后端。
+- [ ] 以内联等方式支持原生调用 C++ 标准库。

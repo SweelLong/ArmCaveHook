@@ -11,5 +11,3 @@ venv/
 # User
 binaries/*
 !binaries/.gitkeep
-plugins/*
-!plugins/armcave.h
