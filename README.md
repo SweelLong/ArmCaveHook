@@ -50,7 +50,11 @@ void init(void) {
 | `target_obj(type, name, symbol)` | 按符号名声明目标二进制里的强类型对象。 |
 | `target_obj_fn(name, symbol, ...)` | 按符号名声明目标对象函数。 |
 | `target_obj_call(fn, obj, ...)` | 调用目标对象函数。 |
-| `target_call(ret, addr, args, ...)` | 按地址快速调用目标内部函数。 |
+| `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数。 |
+| `target_call_offset(ret, offset, args, ...)` | 按文件偏移调用目标内部函数（自动加 `ARMCAVE_BASE`）。 |
+| `ARMCAVE_BASE` | 目标二进制加载基址，默认 `0x100000000`。 |
+| `StdString` | Apple libc++ `std::string` 布局（ARM64 24 字节，SSO 22 字符）。 |
+| `vt_call(obj, idx, arg)` | 调用对象虚表第 `idx` 项，返回 `StdString`（ARM64 sret x8 自动处理）。 |
 | `logf(fmt, ...)` | 简单日志输出。 |
 | `vector<T>` | 固定容量 C++ 容器，默认容量 32。 |
 | `string` | 固定容量字符串，容量 127 字节。 |
@@ -93,7 +97,7 @@ extern "C" int hook_func(int a, int b) {
 }
 ```
 
-目标内部函数只有地址时可以用 `target_call`：
+目标内部函数只有地址时可以用 `target_call`（按虚拟地址）或 `target_call_offset`（按文件偏移）：
 
 ```cpp
 static int call_internal(int a, int b) {
@@ -101,7 +105,45 @@ static int call_internal(int a, int b) {
 }
 ```
 
+文件偏移方式不需要手动计算加载基址，适合在反汇编器里查看的偏移：
+
+```cpp
+// 调用文件偏移 0xD4785C 处的 std::string::assign(buf, path)
+target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
+```
+
+`ARMCAVE_BASE` 默认为 `0x100000000`（标准 arm64 Mach-O），可在插件中 `#define ARMCAVE_BASE` 覆盖。
+
 使用这类接口时要保证地址、符号名、ASLR 状态、调用约定和参数类型正确。
+
+## 虚表调用
+
+通过对象的虚表指针可以调用游戏内部方法。`vt_call` 封装了 ARM64 sret（x8）调用约定，直接返回 `StdString`：
+
+```cpp
+StdString content = vt_call(file_manager, 5, path_string);
+const char *data = (content.d[23] & 0x80)
+    ? *(const char **)content.d   // long mode → 堆指针
+    : (const char *)content.d;    // short mode → 内联数据
+```
+
+结合 `_dyld_get_image_header(0)` 处理 ASLR：
+
+```cpp
+#include "armcave.h"
+#define SEGMENT_NAME arcrating
+
+extern "C" void *_dyld_get_image_header(int);
+
+void init(void) {
+    addr_t base = (addr_t)_dyld_get_image_header(0);
+    if (!base) base = ARMCAVE_BASE;
+    void *fm = ((void *(*)(void))(base + 0xDC491C))();
+
+    StdString po = vt_call(fm, 5, path_string);
+    // 解析 po 内容...
+}
+```
 
 ## 组合方式
 

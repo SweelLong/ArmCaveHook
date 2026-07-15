@@ -111,7 +111,7 @@ def _add_macho(binary, plan: SegmentPlan) -> None:
     segment.virtual_size = align(plan.size)
     segment.file_offset = align(last.file_offset + last.file_size)
     segment.max_protection = 7
-    segment.init_protection = 5
+    segment.init_protection = 7
     section = lief.MachO.Section()
     section.name = name
     section.segment_name = name

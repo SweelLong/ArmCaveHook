@@ -177,6 +177,23 @@ struct armcave_target_ref {
 #define target_call(ret, addr, args, ...) \
     ((ret (*) args)(addr))(__VA_ARGS__)
 
+// ARMCAVE_BASE: default load address for arm64 Mach-O binaries
+#ifndef ARMCAVE_BASE
+#define ARMCAVE_BASE 0x100000000ULL
+#endif
+
+// Apple libc++ std::string layout on ARM64: 24 bytes, SSO up to 22 chars
+struct StdString { char d[24]; };
+
+// Call vtable[index] returning StdString (ARM64 sret via x8).
+// Args are implicitly cast to void*. For zero extra args, omit the arg.
+#define vt_call(obj, idx, arg) \
+    ((StdString (*)(void *, void*))(*(void ***)(obj))[idx])((obj), (void*)(arg))
+
+// Call a function at a file offset (ARMCAVE_BASE + offset) instead of a VA.
+#define target_call_offset(ret, offset, args, ...) \
+    ((ret (*) args)(ARMCAVE_BASE + (addr_t)(offset)))(__VA_ARGS__)
+
 #ifdef __cplusplus
 template <typename T, unsigned long cap = 32>
 class vector {
