@@ -152,21 +152,25 @@ const char *data = (content.d[23] & 0x80)
     : (const char *)content.d;    // short mode → 内联数据
 ```
 
-结合 `_dyld_get_image_header(0)` 处理 ASLR：
+需要先调用目标内部函数再拿对象做虚表调用时，也优先把目标函数声明成 `target_va_fn`。这样插件代码不需要 `_dyld_get_image_header(0)`、`dladdr` 或平台私有 loader API 来计算模块基址；地址解析交给 patch 阶段处理，插件源码更容易跨 Mach-O/ELF 等格式复用：
 
 ```cpp
 #include "armcave.h"
 #define SEGMENT_NAME arcrating
 
-extern "C" void *_dyld_get_image_header(int);
+target_va_fn(void *, get_file_manager, (void), 0x100DC491C);
 
-void init(void) {
-    addr_t base = (addr_t)_dyld_get_image_header(0);
-    if (!base) base = ARMCAVE_BASE;
-    void *fm = ((void *(*)(void))(base + 0xDC491C))();
+static void read_ratinglist() {
+    void *fm = get_file_manager();
+    if (!fm)
+        return;
 
     StdString po = vt_call(fm, 5, path_string);
     // 解析 po 内容...
+}
+
+void init(void) {
+    cave(read_ratinglist);
 }
 ```
 
