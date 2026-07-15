@@ -24,6 +24,7 @@ class PluginBlob:
     _symbol_offsets: dict[str, int] = field(default_factory=dict)
     register_args: list[str] | None = None
     entry_offset: int = 0
+    default_segment: str | None = None
 
     @property
     def total_bytes(self) -> int:
@@ -88,11 +89,6 @@ def _compile_source(path: Path, out_dir: Path) -> Path:
 
 
 def _apply_segment(actions: list[HookAction], segment: str | None) -> list[HookAction]:
-    found = segment or next((a.segment for a in actions if a.kind == "segment" and a.segment not in ("auto", "armcave", "")), None)
-    if found:
-        for action in actions:
-            if action.kind == "cave" and action.segment in ("auto", "armcave", ""):
-                action.segment = found
     return [a for a in actions if a.kind != "segment"]
 
 
@@ -189,6 +185,7 @@ def compile_plugin(path: Path, target_binary: Path | None = None) -> PluginBlob:
             relocs.append({"type": reloc.type, "address": rel_off, "symbol_name": name, "symbol_value": val, "symbol_section": sec_name})
         meta_sec = _sec(obj, "__armhook")
         symbols = _symbol_offsets(obj, text_sec)
+        default_segment = _init_segment(path)
         actions = _parse_meta(bytes(meta_sec.content) if meta_sec else b"")
-        actions = _apply_segment(actions, _init_segment(path))
-        return PluginBlob(text, bytes(extra), actions, relocs, offsets, symbols)
+        actions = _apply_segment(actions, default_segment)
+        return PluginBlob(text, bytes(extra), actions, relocs, offsets, symbols, default_segment=default_segment)

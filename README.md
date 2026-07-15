@@ -35,7 +35,7 @@ void init(void) {
 }
 ```
 
-`SEGMENT_NAME` 是显式 cave 名称。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。段大小由框架根据编译后的代码、常量数据、重定位和 wrapper 自动计算。`hook`/`pre_hook` 会按 action 自动生成独立段名，避免多个 hook 共用同一个 cave；`SEGMENT_NAME` 只会作为未显式命名的 `cave` 默认段名。
+`SEGMENT_NAME` 是段名前缀。Mach-O 使用 `__testhook0`、`__testhook1`，ELF 使用 `.testhook0`、`.testhook1`。段大小由框架根据编译后的代码、常量数据、重定位和 wrapper 自动计算。`hook`/`pre_hook`/`cave` 会按 action 顺序自动编号，避免多个 action 共用同一个 cave。
 
 ## 标准 API
 

@@ -37,28 +37,31 @@ def _uses_standard_api(source: str) -> bool:
     return bool(STANDARD_API_RE.search(source))
 
 
-def _load_standard_actions(path: Path):
+def _load_standard_blob(path: Path):
     try:
-        blob = compile_plugin(path)
-        return blob.declarations
+        return compile_plugin(path)
     except Exception:
         return None
 
 
-def _resolved_action_segment(plugin_stem: str, index: int, action) -> str:
+def _resolved_action_segment(plugin_stem: str, index: int, action, prefix: str | None = None) -> str:
     if action.kind in ("hook", "pre_hook"):
-        return _seg(plugin_stem, index, action)
+        return _seg(plugin_stem, index, action, prefix)
     if action.kind == "cave":
-        return action.segment if action.segment not in ("auto", "armcave", "") else _seg(plugin_stem, index, action)
+        return _seg(plugin_stem, index, action, prefix)
     return "-"
 
 
-def _segment_summary(plugin_stem: str, actions) -> str:
+def _segment_summary(plugin_stem: str, actions, prefix: str | None = None) -> str:
     if not actions:
         return "-"
     segments = []
-    for i, action in enumerate(actions):
-        seg = _resolved_action_segment(plugin_stem, i, action)
+    cave_index = 0
+    for action in actions:
+        if action.kind not in ("hook", "pre_hook", "cave"):
+            continue
+        seg = _resolved_action_segment(plugin_stem, cave_index, action, prefix)
+        cave_index += 1
         if seg != "-" and seg not in segments:
             segments.append(seg)
     if not segments:
@@ -305,10 +308,11 @@ def _list_plugins() -> list[dict]:
         for path in sorted(p for p in PLUGINS_DIR.iterdir() if p.suffix == ".cpp"):
             try:
                 spec = load_plugin(path)
-                actions = _load_standard_actions(path)
+                blob = _load_standard_blob(path)
+                actions = blob.declarations if blob else None
                 if actions:
                     spec.actions = actions
-                segment = _segment_summary(path.stem, actions)
+                segment = _segment_summary(path.stem, actions, blob.default_segment if blob else None)
                 plugins.append({
                     "name": path.name,
                     "stem": path.stem,
@@ -373,10 +377,11 @@ def api_plugin_get(name: str):
         return jsonify({"error": "plugin not found"}), 404
     try:
         spec = load_plugin(path)
-        actions = _load_standard_actions(path)
+        blob = _load_standard_blob(path)
+        actions = blob.declarations if blob else None
         if actions:
             spec.actions = actions
-        segment = _segment_summary(path.stem, actions)
+        segment = _segment_summary(path.stem, actions, blob.default_segment if blob else None)
         return jsonify({
             "name": path.name,
             "stem": path.stem,
@@ -579,18 +584,21 @@ def api_compile_check():
         try:
             from tools.compiler import compile_plugin
             blob = compile_plugin(src)
-            actions = [
-                {
+            actions = []
+            cave_index = 0
+            for a in blob.declarations:
+                segment = _resolved_action_segment(src.stem, cave_index, a, blob.default_segment)
+                if a.kind in ("hook", "pre_hook", "cave"):
+                    cave_index += 1
+                actions.append({
                     "kind": a.kind,
                     "address": "entry" if a.address is None else f"0x{a.address:x}",
                     "handler": a.handler,
                     "register_args": a.register_args or [],
                     "size": a.size,
                     "data": a.data,
-                    "segment": _resolved_action_segment(src.stem, i, a),
-                }
-                for i, a in enumerate(blob.declarations)
-            ]
+                    "segment": segment,
+                })
             return jsonify({
                 "ok": True,
                 "message": "Compilation successful",

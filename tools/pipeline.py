@@ -36,9 +36,13 @@ def _entry(binary) -> int:
     return ep
 
 
-def _seg(plugin: str, index: int, action: HookAction) -> str:
+def _seg(plugin: str, index: int, action: HookAction, prefix: str | None = None) -> str:
     if action.segment and action.segment not in ("auto", "armcave"):
         return action.segment
+    if prefix:
+        raw_prefix = re.sub(r"[^A-Za-z0-9_]+", "_", prefix).strip("_") or "armcave"
+        suffix = str(index)
+        return f"{raw_prefix[:max(1, 14 - len(suffix))]}{suffix}"
     raw = f"{plugin}_{action.handler or action.kind}"
     base = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_").lower() or "armcave"
     suffix = hashlib.sha1(f"{plugin}:{index}:{action.kind}:{action.address}".encode()).hexdigest()[:3]
@@ -115,9 +119,11 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
     hooks = defaultdict(list)
     pre_hooks = defaultdict(list)
     for spec, blob in compiled:
+        cave_index = 0
         for i, action in enumerate(blob.declarations):
             if action.kind == "cave":
-                action.segment = _seg(spec.name, i, action)
+                action.segment = _seg(spec.name, cave_index, action, blob.default_segment)
+                cave_index += 1
                 caves.append((spec, blob, action))
                 continue
             addr = _entry(binary) if action.address is None and action.handler else action.address
@@ -127,10 +133,12 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
             if action.kind in ("hex", "bytes", "asm", "clear_imm12"):
                 direct.append(action)
             elif action.kind == "hook":
-                action.segment = _seg(spec.name, i, action)
+                action.segment = _seg(spec.name, cave_index, action, blob.default_segment)
+                cave_index += 1
                 hooks[addr].append((spec, blob, action))
             elif action.kind == "pre_hook":
-                action.segment = _seg(spec.name, i, action)
+                action.segment = _seg(spec.name, cave_index, action, blob.default_segment)
+                cave_index += 1
                 pre_hooks[addr].append((spec, blob, action))
             else:
                 raise ValueError(f"{spec.name}: unsupported action {action.kind}")
@@ -147,7 +155,6 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
             print(f"{a.kind}: 0x{a.address:x} size={a.size or 'auto'}")
         return True
     for _, blob, action in caves:
-        action.segment = _seg(action.segment or "", 0, action)
         cave_va = _add_cave(input_path, output_path, action.segment, blob, action)
         print(f"[cave] segment={action.segment} va=0x{cave_va:x} handler={action.handler}")
     for action in direct:
