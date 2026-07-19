@@ -57,14 +57,13 @@ void init(void) {
 | `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数（BR26 PC-relative BL，抗 ASLR）。 |
 | `target_call_offset(ret, offset, args, ...)` | 按文件偏移调用目标内部函数（自动加 `ARMCAVE_BASE`，抗 ASLR）。 |
 | `ARMCAVE_BASE` | 目标二进制加载基址，默认 `0x100000000`。 |
-| `string` | 封装 Apple libc++ `std::string`（sizeof=24，SSO 22 字符，RAII 析构自动释放堆）。 |
+| `string` | 封装 Apple libc++ `std::string` 布局（sizeof=24，SSO up to 22 chars），纯自实现 `assign`/`append`，RAII 析构自动释放堆。 |
 | `vt_call(obj, idx, arg)` | 调用对象虚表第 `idx` 项，返回 `string`（ARM64 sret x8 自动处理）。 |
 | `read<T>(addr)` / `write<T>(addr, value)` | 读写目标进程内存。 |
 | `vcall(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
 | `object_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
 | `logf(fmt, ...)` | 简单日志输出。 |
 | `vector<T>` | 动态 C++ 容器，使用目标堆（`malloc`/`free`），支持扩容。 |
-| `string` | 封装 Apple libc++ `std::string`（RAII 析构自动释放堆）。 |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | 基础类型别名。 |
 
 `hook`、`pre_hook` 和 `cave` 后面的寄存器参数可选。传入寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
@@ -212,12 +211,12 @@ void init(void) {
 
 插件按 C++17 编译，并关闭异常、RTTI 和线程安全静态初始化。推荐使用简单类型、普通函数及框架内置的 `vector<T>` 和 `string`（使用目标堆/malloc，无需额外配置）。避免依赖异常、完整 libc++ 容器和复杂全局构造。
 
-## 构建配置
+## 构建配置（推荐）
 
 编辑项目根目录的 `armcave.conf`：
 
 ```text
-input = binaries/Arcaea
+input = binaries/bin
 output = binaries/Arcaea.patched
 plugins = plugins
 # plugin_whitelist = arc_rating.cpp, arc_autoplay.cpp
