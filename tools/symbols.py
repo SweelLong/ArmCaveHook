@@ -17,18 +17,28 @@ def _names(symbol_name: str) -> list[str]:
     return [symbol_name, symbol_name[1:] if symbol_name.startswith("_") else "_" + symbol_name, "__" + symbol_name.lstrip("_")]
 
 
-def _resolve_armcave_va(symbol_name: str) -> int | None:
+def _resolve_marker(symbol_name: str, marker: str) -> int | None:
     for name in _names(symbol_name):
-        marker = "armcave_va_"
         idx = name.find(marker)
         if idx < 0:
             continue
         raw = name[idx + len(marker):]
+        raw = raw.rstrip("ULul")
         try:
             return int(raw, 0)
         except ValueError:
             return None
     return None
+
+def _resolve_armcave_va(symbol_name: str) -> int | None:
+    return _resolve_marker(symbol_name, "armcave_va_")
+
+def _resolve_armcave_data(symbol_name: str) -> int | None:
+    return _resolve_marker(symbol_name, "armcave_data_")
+
+def _resolve_armcave_tco(symbol_name: str, base: int) -> int | None:
+    val = _resolve_marker(symbol_name, "armcave_tco_")
+    return val + base if val is not None else None
 
 
 def _resolve_via_symbol_table(binary: lief.MachO.Binary, symbol_name: str) -> int | None:
@@ -106,7 +116,19 @@ def _patch_got_load_pageoff12(data: bytearray, off: int, target: int) -> None:
     struct.pack_into("<I", data, off, (insn & 0xFFC003FF) | (imm << 10))
 
 
-def resolve_plugin_relocs(text: bytes, extra: bytes, relocs: list[dict], offsets: dict[str, int], binary_path: Path, text_va: int, data_va: int) -> tuple[bytes, bytes]:
+def _patch_ldr_to_add(data: bytearray, off: int, target: int) -> None:
+    insn = struct.unpack_from("<I", data, off)[0]
+    if (insn & 0xFF000000) == 0xF9000000:
+        opcode = 0x91000000
+    elif (insn & 0xFF000000) == 0xB9000000:
+        opcode = 0x11000000
+    else:
+        raise ValueError(f"unexpected GOT-load insn: 0x{insn:08x}")
+    imm12 = target & 0xFFF
+    struct.pack_into("<I", data, off, opcode | (imm12 << 10) | (insn & 0x000003FF))
+
+
+def resolve_plugin_relocs(text: bytes, extra: bytes, relocs: list[dict], offsets: dict[str, int], binary_path: Path, text_va: int, data_va: int, armcave_base: int = 0x100000000) -> tuple[bytes, bytes]:
     binary = lief.parse(str(binary_path))
     if binary is None:
         raise RuntimeError(f"failed to parse {binary_path}")
@@ -115,8 +137,11 @@ def resolve_plugin_relocs(text: bytes, extra: bytes, relocs: list[dict], offsets
     for r in relocs:
         t, off, name, val, section = int(r["type"]), r["address"], r["symbol_name"], r["symbol_value"], r["symbol_section"]
         if t == 2 and name:
+            dst = None
             if val == 0 and section is None:
                 dst = _resolve_armcave_va(name)
+                if dst is None:
+                    dst = _resolve_armcave_tco(name, armcave_base)
                 if dst is None:
                     dst = _resolve_via_symbol_table(binary, name)
             else:
@@ -124,20 +149,36 @@ def resolve_plugin_relocs(text: bytes, extra: bytes, relocs: list[dict], offsets
             if dst is None:
                 raise RuntimeError(f"unresolved symbol: {name}")
             _patch_branch26(text_buf, off, text_va + off, dst)
-        elif t == 3 and section:
-            target = text_va + val if section == "__text" else data_va + offsets.get(section, 0) + val
-            _patch_page21(text_buf, off, text_va + off, target)
-        elif t == 4 and section:
-            target = text_va + val if section == "__text" else data_va + offsets.get(section, 0) + val
-            _patch_pageoff12(text_buf, off, target)
+        elif t == 3:
+            dst = _resolve_armcave_data(name) if name else None
+            if dst is not None:
+                _patch_page21(text_buf, off, text_va + off, dst)
+            elif section:
+                target = text_va + val if section == "__text" else data_va + offsets.get(section, 0) + val
+                _patch_page21(text_buf, off, text_va + off, target)
+        elif t == 4:
+            dst = _resolve_armcave_data(name) if name else None
+            if dst is not None:
+                _patch_pageoff12(text_buf, off, dst)
+            elif section:
+                target = text_va + val if section == "__text" else data_va + offsets.get(section, 0) + val
+                _patch_pageoff12(text_buf, off, target)
         elif t == 5 and name:
-            target = _resolve_import_slot(binary, name)
-            if target is None:
-                raise RuntimeError(f"unresolved import slot: {name}")
-            _patch_page21(text_buf, off, text_va + off, target)
+            dst = _resolve_armcave_data(name)
+            if dst is not None:
+                _patch_page21(text_buf, off, text_va + off, dst)
+            else:
+                target = _resolve_import_slot(binary, name)
+                if target is None:
+                    raise RuntimeError(f"unresolved import slot: {name}")
+                _patch_page21(text_buf, off, text_va + off, target)
         elif t == 6 and name:
-            target = _resolve_import_slot(binary, name)
-            if target is None:
-                raise RuntimeError(f"unresolved import slot: {name}")
-            _patch_got_load_pageoff12(text_buf, off, target)
+            dst = _resolve_armcave_data(name)
+            if dst is not None:
+                _patch_ldr_to_add(text_buf, off, dst)
+            else:
+                target = _resolve_import_slot(binary, name)
+                if target is None:
+                    raise RuntimeError(f"unresolved import slot: {name}")
+                _patch_got_load_pageoff12(text_buf, off, target)
     return bytes(text_buf), bytes(extra_buf)

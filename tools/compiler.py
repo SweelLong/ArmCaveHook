@@ -12,6 +12,7 @@ from .plugin import HookAction
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SEGMENT_RE = re.compile(r"^\s*#\s*define\s+SEGMENT_NAME\s+([A-Za-z_][A-Za-z0-9_]*)\s*$", re.MULTILINE)
+ARMCAVE_BASE_RE = re.compile(r"^\s*#\s*define\s+ARMCAVE_BASE\s+(0x[0-9a-fA-F]+|\d+)\s*$", re.MULTILINE)
 
 
 @dataclass
@@ -25,6 +26,7 @@ class PluginBlob:
     register_args: list[str] | None = None
     entry_offset: int = 0
     default_segment: str | None = None
+    armcave_base: int = 0x100000000
 
     @property
     def total_bytes(self) -> int:
@@ -42,7 +44,7 @@ class PluginBlob:
                 out += self.extra
             return bytes(out)
         from .symbols import resolve_plugin_relocs
-        text, extra = resolve_plugin_relocs(self.text, self.extra, self._relocs, self._section_offsets, target_binary, text_va, data_va)
+        text, extra = resolve_plugin_relocs(self.text, self.extra, self._relocs, self._section_offsets, target_binary, text_va, data_va, self.armcave_base)
         out = bytearray(text)
         if extra:
             out += b"\x00" * ((-len(out)) % 16)
@@ -82,6 +84,16 @@ def _init_segment(path: Path) -> str | None:
     text = path.read_text(encoding="utf-8", errors="ignore")
     m = SEGMENT_RE.search(text)
     return m.group(1) if m else None
+
+def _init_armcave_base(path: Path) -> int:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    m = ARMCAVE_BASE_RE.search(text)
+    if m:
+        try:
+            return int(m.group(1), 0)
+        except ValueError:
+            pass
+    return 0x100000000
 
 
 def _compile_source(path: Path, out_dir: Path) -> Path:
@@ -186,6 +198,7 @@ def compile_plugin(path: Path, target_binary: Path | None = None) -> PluginBlob:
         meta_sec = _sec(obj, "__armhook")
         symbols = _symbol_offsets(obj, text_sec)
         default_segment = _init_segment(path)
+        base = _init_armcave_base(path)
         actions = _parse_meta(bytes(meta_sec.content) if meta_sec else b"")
         actions = _apply_segment(actions, default_segment)
-        return PluginBlob(text, bytes(extra), actions, relocs, offsets, symbols, default_segment=default_segment)
+        return PluginBlob(text, bytes(extra), actions, relocs, offsets, symbols, default_segment=default_segment, armcave_base=base)

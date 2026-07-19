@@ -53,8 +53,9 @@ void init(void) {
 | `target_obj(type, name, symbol)` | 按符号名声明目标二进制里的强类型对象。 |
 | `target_obj_fn(name, symbol, ...)` | 按符号名声明目标对象函数。 |
 | `target_obj_call(fn, obj, ...)` | 调用目标对象函数。 |
-| `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数。 |
-| `target_call_offset(ret, offset, args, ...)` | 按文件偏移调用目标内部函数（自动加 `ARMCAVE_BASE`）。 |
+| `target_addr(va)` | 将 VMA 转为运行时地址（ADRP+PAGEOFF12，抗 ASLR），用于数据地址引用。 |
+| `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数（BR26 PC-relative BL，抗 ASLR）。 |
+| `target_call_offset(ret, offset, args, ...)` | 按文件偏移调用目标内部函数（自动加 `ARMCAVE_BASE`，抗 ASLR）。 |
 | `ARMCAVE_BASE` | 目标二进制加载基址，默认 `0x100000000`。 |
 | `StdString` | Apple libc++ `std::string` 布局（ARM64 24 字节，SSO 22 字符）。 |
 | `vt_call(obj, idx, arg)` | 调用对象虚表第 `idx` 项，返回 `StdString`（ARM64 sret x8 自动处理）。 |
@@ -122,24 +123,7 @@ static int call_internal(int a, int b) {
 }
 ```
 
-也可以用 `target_call`（按虚拟地址）或 `target_call_offset`（按文件偏移）快速调用：
-
-```cpp
-static int call_internal(int a, int b) {
-    return target_call(int, 0x100012340, (int, int), a, b);
-}
-```
-
-文件偏移方式不需要手动计算加载基址，适合在反汇编器里查看的偏移：
-
-```cpp
-// 调用文件偏移 0xD4785C 处的 std::string::assign(buf, path)
-target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
-```
-
-`ARMCAVE_BASE` 默认为 `0x100000000`（标准 arm64 Mach-O），可在插件中 `#define ARMCAVE_BASE` 覆盖。
-
-使用这类接口时要保证地址、符号名、ASLR 状态、调用约定和参数类型正确。`target_call`/`target_call_offset` 是 C++ 函数指针调用，编译后会通过寄存器间接调用；`target_va_fn` 更适合固定 VA 的内部函数。
+`ARMCAVE_BASE` 默认为 `0x100000000`（标准 arm64 Mach-O），可在插件中 `#define ARMCAVE_BASE` 覆盖。`target_call` 和 `target_call_offset` 的使用见下文。
 
 ## 虚表调用
 
@@ -152,7 +136,7 @@ const char *data = (content.d[23] & 0x80)
     : (const char *)content.d;    // short mode → 内联数据
 ```
 
-需要先调用目标内部函数再拿对象做虚表调用时，也优先把目标函数声明成 `target_va_fn`。这样插件代码不需要 `_dyld_get_image_header(0)`、`dladdr` 或平台私有 loader API 来计算模块基址；地址解析交给 patch 阶段处理，插件源码更容易跨 Mach-O/ELF 等格式复用：
+需要先调用目标内部函数再拿对象做虚表调用时，也优先把目标函数声明成 `target_va_fn`。这样插件代码不需要 `_dyld_get_image_header(0)`、`dladdr` 或平台私有 loader API 来计算模块基址；地址解析交给 patch 阶段处理，插件源码更容易跨 Mach-O/ELF 等格式复用。访问固定数据地址时使用 `target_addr`：
 
 ```cpp
 #include "armcave.h"
@@ -172,6 +156,27 @@ static void read_ratinglist() {
 void init(void) {
     cave(read_ratinglist);
 }
+```
+
+访问固定数据地址（全局变量、typeinfo 等）用 `target_addr`。它生成 ADRP+PAGEOFF12 relocation，patch 阶段解析为绝对 VMA，运行时 PC-relative 访问，天然抗 ASLR：
+
+```cpp
+#define kAutoplayState 0x1014ED000
+
+static AutoplayState *state() {
+    return (AutoplayState *)target_addr(kAutoplayState);
+}
+```
+
+`target_call` 和 `target_call_offset` 现在也走 BR26 PC-relative BL，不再通过函数指针间接调用，同样抗 ASLR：
+
+```cpp
+static int call_internal(int a, int b) {
+    return target_call(int, 0x100012340, (int, int), a, b);
+}
+
+// 文件偏移方式，框架自动加 ARMCAVE_BASE
+target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
 ```
 
 ## 组合方式
