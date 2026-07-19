@@ -10,6 +10,8 @@ def main() -> int:
     parser.add_argument("input", help="input Mach-O or ELF binary")
     parser.add_argument("-o", "--output", help="output binary path")
     parser.add_argument("--plugins", default="plugins", help="plugins directory")
+    parser.add_argument("--plugin-whitelist", help="comma-separated plugin names to include")
+    parser.add_argument("--plugin-blacklist", help="comma-separated plugin names to exclude")
     parser.add_argument("--dry-run", action="store_true", help="scan and plan only")
     args = parser.parse_args()
 
@@ -17,7 +19,8 @@ def main() -> int:
     try:
         inp = Path(args.input)
         out = Path(args.output) if args.output else inp.with_suffix(inp.suffix + ".patched")
-        run_pipeline(inp, out, Path(args.plugins), dry_run=args.dry_run)
+        run_pipeline(inp, out, Path(args.plugins), dry_run=args.dry_run,
+                     whitelist=args.plugin_whitelist, blacklist=args.plugin_blacklist)
     except Exception:
         traceback.print_exc()
         return 1

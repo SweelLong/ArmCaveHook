@@ -57,14 +57,14 @@ void init(void) {
 | `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数（BR26 PC-relative BL，抗 ASLR）。 |
 | `target_call_offset(ret, offset, args, ...)` | 按文件偏移调用目标内部函数（自动加 `ARMCAVE_BASE`，抗 ASLR）。 |
 | `ARMCAVE_BASE` | 目标二进制加载基址，默认 `0x100000000`。 |
-| `StdString` | Apple libc++ `std::string` 布局（ARM64 24 字节，SSO 22 字符）。 |
-| `vt_call(obj, idx, arg)` | 调用对象虚表第 `idx` 项，返回 `StdString`（ARM64 sret x8 自动处理）。 |
+| `string` | 封装 Apple libc++ `std::string`（sizeof=24，SSO 22 字符，RAII 析构自动释放堆）。 |
+| `vt_call(obj, idx, arg)` | 调用对象虚表第 `idx` 项，返回 `string`（ARM64 sret x8 自动处理）。 |
 | `read<T>(addr)` / `write<T>(addr, value)` | 读写目标进程内存。 |
 | `vcall(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
 | `object_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
 | `logf(fmt, ...)` | 简单日志输出。 |
-| `vector<T>` | 固定容量 C++ 容器，默认容量 32。 |
-| `string` | 固定容量字符串，容量 127 字节。 |
+| `vector<T>` | 动态 C++ 容器，使用目标堆（`malloc`/`free`），支持扩容。 |
+| `string` | 封装 Apple libc++ `std::string`（RAII 析构自动释放堆）。 |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | 基础类型别名。 |
 
 `hook`、`pre_hook` 和 `cave` 后面的寄存器参数可选。传入寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
@@ -127,13 +127,11 @@ static int call_internal(int a, int b) {
 
 ## 虚表调用
 
-通过对象的虚表指针可以调用游戏内部方法。`vt_call` 封装了 ARM64 sret（x8）调用约定，直接返回 `StdString`：
+通过对象的虚表指针可以调用游戏内部方法。`vt_call` 封装了 ARM64 sret（x8）调用约定，直接返回 `string`：
 
 ```cpp
-StdString content = vt_call(file_manager, 5, path_string);
-const char *data = (content.d[23] & 0x80)
-    ? *(const char **)content.d   // long mode → 堆指针
-    : (const char *)content.d;    // short mode → 内联数据
+string content = vt_call(file_manager, 5, path_string);
+const char *data = content.c_str();  // SSO/long 模式自动处理
 ```
 
 需要先调用目标内部函数再拿对象做虚表调用时，也优先把目标函数声明成 `target_va_fn`。这样插件代码不需要 `_dyld_get_image_header(0)`、`dladdr` 或平台私有 loader API 来计算模块基址；地址解析交给 patch 阶段处理，插件源码更容易跨 Mach-O/ELF 等格式复用。访问固定数据地址时使用 `target_addr`：
@@ -149,7 +147,7 @@ static void read_ratinglist() {
     if (!fm)
         return;
 
-    StdString po = vt_call(fm, 5, path_string);
+    string po = vt_call(fm, 5, path_string);
     // 解析 po 内容...
 }
 
@@ -212,14 +210,34 @@ void init(void) {
 
 ## C++ 使用范围
 
-插件按 C++17 编译，并关闭异常、RTTI 和线程安全静态初始化。推荐使用简单类型、普通函数、固定容量 `vector<T>` 和 `string`。避免依赖堆分配、异常、完整 libc++ 容器和复杂全局构造。
+插件按 C++17 编译，并关闭异常、RTTI 和线程安全静态初始化。推荐使用简单类型、普通函数及框架内置的 `vector<T>` 和 `string`（使用目标堆/malloc，无需额外配置）。避免依赖异常、完整 libc++ 容器和复杂全局构造。
 
-## CLI
+## 构建配置
+
+编辑项目根目录的 `armcave.conf`：
+
+```text
+input = binaries/Arcaea
+output = binaries/Arcaea.patched
+plugins = plugins
+# plugin_whitelist = arc_rating.cpp, arc_autoplay.cpp
+# plugin_blacklist = arc_test.cpp
+```
+
+然后用对应平台的构建脚本：
+
+| 文件 | 平台 |
+|---|---|
+| `./build.sh` | Linux / macOS 终端 |
+| 双击 `build.command` | macOS Finder |
+| `build.bat` | Windows |
+
+或直接调用 CLI：
 
 ```bash
-python3 armcave.py binaries/AppBinary --dry-run
-python3 armcave.py binaries/AppBinary -o binaries/AppBinary.patched
-python3 armcave.py binaries/AppBinary --plugins plugins
+python3 armcave.py binaries/AppBinary -o binaries/AppBinary.patched --plugins plugins
+python3 armcave.py binaries/AppBinary --plugin-whitelist arc_rating.cpp -o out.patched
+python3 armcave.py binaries/AppBinary --plugin-blacklist arc_autoplay.cpp -o out.patched
 ```
 
 ## Web IDE
@@ -233,9 +251,3 @@ python3 webui.py
 ```text
 http://127.0.0.1:5000
 ```
-
-## TODO
-
-- [ ] 支持长范围跳转。长跳转需要多条指令，例如加载绝对地址后 `br`，会占用更大的覆盖窗口，也会带来原指令保存、回跳和对齐限制。
-- [ ] 扩展其他架构后端。
-- [ ] 以内联等方式支持原生调用 C++ 标准库。

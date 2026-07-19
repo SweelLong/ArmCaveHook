@@ -212,12 +212,18 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
     return True
 
 
-def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run: bool = False, plugin_names: list[str] | None = None) -> None:
+def run_pipeline(input_path: Path, output_path: Path, plugins_dir: Path, dry_run: bool = False, plugin_names: list[str] | None = None, whitelist: str | None = None, blacklist: str | None = None) -> None:
     if not input_path.exists():
         raise FileNotFoundError(input_path)
     plugins = []
     if plugins_dir.exists():
         names = plugin_names if plugin_names is not None else [p.name for p in sorted(plugins_dir.iterdir()) if p.suffix == ".cpp"]
+        if whitelist:
+            wl = set(whitelist.split(","))
+            names = [n for n in names if n in wl]
+        elif blacklist:
+            bl = set(blacklist.split(","))
+            names = [n for n in names if n not in bl]
         for name in names:
             path = plugins_dir / name
             if path.exists():
