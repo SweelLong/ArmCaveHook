@@ -1,3 +1,7 @@
+# ArmCaveHook
+
+中文 | [English](docs/README_EN.md)
+
 <p align="center">
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
   <img src="https://img.shields.io/badge/Apple-iOS%20Mach--O-lightgrey?logo=apple" alt="Apple">
@@ -5,8 +9,6 @@
   <img src="https://img.shields.io/badge/Language-Python%203-yellow?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/Binary-LIEF-orange?logo=bookstack" alt="LIEF">
 </p>
-
-# ArmCaveHook
 
 ArmCaveHook 是一个 AArch64 静态 hook 框架。插件使用 `.cpp` 编写，框架把插件编译成 cave 代码段，再按插件入口声明修改目标二进制。
 
@@ -201,5 +203,3 @@ python3 armcave.py binaries/AppBinary -o binaries/AppBinary.patched --plugins pl
 python3 armcave.py binaries/AppBinary --plugin-whitelist arc_rating.cpp -o out.patched
 python3 armcave.py binaries/AppBinary --plugin-blacklist arc_autoplay.cpp -o out.patched
 ```
-
-
