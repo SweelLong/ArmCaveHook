@@ -43,7 +43,6 @@ void init(void) {
 |---|---|
 | `hook(addr, handler, ...)` | 函数替代 hook，从目标地址跳到 handler。 |
 | `pre_hook(addr, handler, ...)` | 前置 hook，先调用 handler，再执行被覆盖的原指令并回到原函数。 |
-| `cave(handler, ...)` | 只把 handler 写入 cave，不修改目标控制流。 |
 | `inject_asm(addr, "instruction")` | 汇编 AArch64 指令并写入虚拟地址。 |
 | `inject_hex(addr, "hex")` | 写入十六进制机器码。 |
 | `patch_imm12(addr, expected)` | 当前指令等于 `expected` 时清掉 ADD/SUB imm12 位。 |
@@ -57,18 +56,18 @@ void init(void) {
 | `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数（BR26 PC-relative BL，抗 ASLR）。 |
 | `target_call_offset(ret, offset, args, ...)` | 按文件偏移调用目标内部函数（自动加 `ARMCAVE_BASE`，抗 ASLR）。 |
 | `ARMCAVE_BASE` | 目标二进制加载基址，默认 `0x100000000`。 |
-| `string` | 封装 Apple libc++ `std::string` 布局（sizeof=24，SSO up to 22 chars），纯自实现 `assign`/`append`，RAII 析构自动释放堆。 |
 | `vt_call(obj, idx, arg)` | 调用对象虚表第 `idx` 项，返回 `string`（ARM64 sret x8 自动处理）。 |
 | `read<T>(addr)` / `write<T>(addr, value)` | 读写目标进程内存。 |
 | `vcall(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
 | `object_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
 | `logf(fmt, ...)` | 简单日志输出。 |
+| `string` | 封装 Apple libc++ `std::string` 布局（sizeof=24，SSO up to 22 chars），纯自实现 `assign`/`append`，RAII 析构自动释放堆。 |
 | `vector<T>` | 动态 C++ 容器，使用目标堆（`malloc`/`free`），支持扩容。 |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | 基础类型别名。 |
 
-`hook`、`pre_hook` 和 `cave` 后面的寄存器参数可选。传入寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
+`hook` 和 `pre_hook` 后面的寄存器参数可选。传入寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
 
-`hook` 和 `pre_hook` 都是静态写跳转到 cave，但控制流不同：
+`hook` 和 `pre_hook` 都是静态写跳转到 code cave，但控制流不同：
 
 ```text
 hook:     target -> handler -> ret
@@ -95,7 +94,7 @@ void init(void) {
 
 ## 目标函数调用
 
-`asm("symbol")` 是 Clang/C++ 的符号别名语法，用来把插件声明绑定到目标二进制里的真实符号。它不是指令注入 API；指令注入使用 `inject_asm`。
+`target_fn` 用来把插件函数声明绑定到目标二进制里的真实符号。它不是指令注入 API；指令注入使用 `inject_asm`。
 
 ```cpp
 target_obj(cout_obj, "__ZNSt3__14coutE");
@@ -149,10 +148,6 @@ static void read_ratinglist() {
     string po = vt_call(fm, 5, path_string);
     // 解析 po 内容...
 }
-
-void init(void) {
-    cave(read_ratinglist);
-}
 ```
 
 访问固定数据地址（全局变量、typeinfo 等）用 `target_addr`。它生成 ADRP+PAGEOFF12 relocation，patch 阶段解析为绝对 VMA，运行时 PC-relative 访问，天然抗 ASLR：
@@ -176,37 +171,6 @@ static int call_internal(int a, int b) {
 target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
 ```
 
-## 组合方式
-
-只新增函数时使用 `cave`：
-
-```cpp
-#define SEGMENT_NAME toolseg
-
-static void inspect(int value) {
-    logf("value=%d\n", value);
-}
-
-void init(void) {
-    cave(inspect, w0);
-}
-```
-
-需要 inline 行为时，先用 `cave` 写入函数，再用 `inject_asm` 写跳转：
-
-```cpp
-#define SEGMENT_NAME inlinehook
-
-static void before_call(int value) {
-    logf("value=%d\n", value);
-}
-
-void init(void) {
-    cave(before_call, w0);
-    inject_asm(0x100123450, "B 0x100800000");
-}
-```
-
 ## C++ 使用范围
 
 插件按 C++17 编译，并关闭异常、RTTI 和线程安全静态初始化。推荐使用简单类型、普通函数及框架内置的 `vector<T>` 和 `string`（使用目标堆/malloc，无需额外配置）。避免依赖异常、完整 libc++ 容器和复杂全局构造。
@@ -217,8 +181,7 @@ void init(void) {
 
 ```text
 input = binaries/bin
-output = binaries/Arcaea.patched
-plugins = plugins
+output = binaries/bin.patched
 # plugin_whitelist = arc_rating.cpp, arc_autoplay.cpp
 # plugin_blacklist = arc_test.cpp
 ```
@@ -239,14 +202,4 @@ python3 armcave.py binaries/AppBinary --plugin-whitelist arc_rating.cpp -o out.p
 python3 armcave.py binaries/AppBinary --plugin-blacklist arc_autoplay.cpp -o out.patched
 ```
 
-## Web IDE
 
-```bash
-python3 webui.py
-```
-
-打开：
-
-```text
-http://127.0.0.1:5000
-```

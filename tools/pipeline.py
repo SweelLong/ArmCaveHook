@@ -10,7 +10,7 @@ import subprocess
 import lief
 
 from .compiler import assemble_aarch64, compile_plugin
-from .patcher import build_hook_cave, encode_b, patch_bytes_va, patch_hook_macho, patch_hook_window
+from .patcher import build_hook_cave, patch_bytes_va, patch_hook_macho, patch_hook_window
 from .plugin import HookAction, load_plugin
 from .segment import SegmentPlan, add_segment, seg_va, segment_file_offset, write_at_offset
 
@@ -80,30 +80,6 @@ def _clear_imm12(output_path: Path, action: HookAction) -> bool:
     return True
 
 
-def _add_cave(input_path: Path, output_path: Path, segment: str, blob, action: HookAction) -> int:
-    item = blob.for_action(action)
-    size = 4 + item.total_bytes
-    binary = _parse(output_path)
-    if isinstance(binary, lief.MachO.Binary):
-        add_segment(output_path, SegmentPlan(segment, size, b"\x00" * size), output_path)
-        binary = _parse(output_path)
-        cave_va = seg_va(binary, segment, size)
-        cave_off = segment_file_offset(binary, segment)
-        data_va = cave_va + 4 + ((len(item.text) + 15) & ~15)
-        built = item.build(cave_va + 4, data_va, output_path)
-        head = encode_b(cave_va, cave_va + 4 + item.entry_offset).to_bytes(4, "little")
-        write_at_offset(output_path, cave_off, head + built, size)
-        return cave_va
-    add_segment(output_path, SegmentPlan(segment, size, b"\x00" * size), output_path)
-    binary = _parse(output_path)
-    cave_va = seg_va(binary, segment, size)
-    data_va = cave_va + 4 + ((len(item.text) + 15) & ~15)
-    built = item.build(cave_va + 4, data_va, input_path)
-    head = encode_b(cave_va, cave_va + 4 + item.entry_offset).to_bytes(4, "little")
-    add_segment(output_path, SegmentPlan(segment, len(head) + len(built), head + built), output_path)
-    return cave_va
-
-
 def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool) -> bool:
     compiled = []
     for spec in plugins:
@@ -114,18 +90,12 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
     if not compiled:
         return False
     binary = _parse(output_path if output_path.exists() else input_path)
-    caves = []
     direct = []
     hooks = defaultdict(list)
     pre_hooks = defaultdict(list)
     for spec, blob in compiled:
         cave_index = 0
         for i, action in enumerate(blob.declarations):
-            if action.kind == "cave":
-                action.segment = _seg(spec.name, cave_index, action, blob.default_segment)
-                cave_index += 1
-                caves.append((spec, blob, action))
-                continue
             addr = _entry(binary) if action.address is None and action.handler else action.address
             if addr is None:
                 raise ValueError(f"{spec.name}: {action.kind} missing address")
@@ -143,8 +113,6 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
             else:
                 raise ValueError(f"{spec.name}: unsupported action {action.kind}")
     if dry_run:
-        for _, _, a in caves:
-            print(f"cave: segment={a.segment} handler={a.handler}")
         for actions in hooks.values():
             for _, _, a in actions:
                 print(f"{a.kind}: 0x{a.address:x} segment={a.segment} handler={a.handler}")
@@ -154,9 +122,6 @@ def _standard(input_path: Path, output_path: Path, plugins: list, dry_run: bool)
         for a in direct:
             print(f"{a.kind}: 0x{a.address:x} size={a.size or 'auto'}")
         return True
-    for _, blob, action in caves:
-        cave_va = _add_cave(input_path, output_path, action.segment, blob, action)
-        print(f"[cave] segment={action.segment} va=0x{cave_va:x} handler={action.handler}")
     for action in direct:
         if action.kind == "clear_imm12":
             changed = _clear_imm12(output_path, action)
