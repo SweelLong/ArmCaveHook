@@ -1,9 +1,15 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-.venv/
-venv/
+# CMake / C++ build output
+/build/
+/build-*/
+/cmake-build-*/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+CMakeUserPresets.json
 
 # macOS
 .DS_Store

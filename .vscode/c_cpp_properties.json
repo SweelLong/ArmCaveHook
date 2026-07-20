@@ -1,0 +1,40 @@
+{
+    "configurations": [
+        {
+            "name": "macOS",
+            "compilerPath": "/usr/bin/clang++",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "includePath": [
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/plugins"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "macos-clang-arm64"
+        },
+        {
+            "name": "Linux",
+            "compilerPath": "clang++",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "includePath": [
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/plugins"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "linux-clang-x64"
+        },
+        {
+            "name": "Win32",
+            "compilerPath": "clang++.exe",
+            "includePath": [
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/plugins"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-clang-x64"
+        }
+    ],
+    "version": 4
+}

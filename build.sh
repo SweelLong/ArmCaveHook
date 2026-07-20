@@ -16,7 +16,25 @@ wl=$(sed -n 's/^plugin_whitelist[[:space:]]*=[[:space:]]*//p' "$CONF")
 bl=$(sed -n 's/^plugin_blacklist[[:space:]]*=[[:space:]]*//p' "$CONF")
 : "${plugins:=plugins}"
 
-exec python3 armcave.py "$input" -o "$output" \
-    --plugins "$plugins" \
-    ${wl:+--plugin-whitelist "$wl"} \
-    ${bl:+--plugin-blacklist "$bl"}
+BUILD_DIR="${BUILD_DIR:-build}"
+CLI="$BUILD_DIR/armcave"
+cmake -S . -B "$BUILD_DIR"
+cmake --build "$BUILD_DIR" --config Release
+
+if [ ! -x "$CLI" ] && [ -x "$BUILD_DIR/Release/armcave" ]; then
+    CLI="$BUILD_DIR/Release/armcave"
+fi
+if [ ! -x "$CLI" ]; then
+    echo "Error: built CLI not found at $CLI" >&2
+    exit 1
+fi
+
+set -- "$CLI" "$input" -o "$output" --plugins "$plugins"
+if [ -n "$wl" ]; then
+    set -- "$@" --plugin-whitelist "$wl"
+fi
+if [ -n "$bl" ]; then
+    set -- "$@" --plugin-blacklist "$bl"
+fi
+
+exec "$@"

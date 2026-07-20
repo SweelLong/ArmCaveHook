@@ -6,8 +6,8 @@
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
   <img src="https://img.shields.io/badge/Apple-iOS%20Mach--O-lightgrey?logo=apple" alt="Apple">
     <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
-  <img src="https://img.shields.io/badge/Language-Python%203-yellow?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/Binary-LIEF-orange?logo=bookstack" alt="LIEF">
+  <img src="https://img.shields.io/badge/Language-C%2B%2B17-blue?logo=cplusplus" alt="C++17">
+  <img src="https://img.shields.io/badge/Binary-Built--in-orange" alt="Built-in binary support">
 </p>
 
 ArmCaveHook 是一个 AArch64 静态 hook 框架。插件使用 `.cpp` 编写，框架把插件编译成 cave 代码段，再按插件入口声明修改目标二进制。
@@ -37,7 +37,7 @@ void init(void) {
 }
 ```
 
-`SEGMENT_NAME` 是段名前缀。Mach-O 使用 `__testhook0`、`__testhook1`，ELF 使用 `.testhook0`、`.testhook1`。段大小由框架根据编译后的代码、常量数据、重定位和 wrapper 自动计算。`hook`/`pre_hook`/`cave` 会按 action 顺序自动编号，避免多个 action 共用同一个 cave。
+`SEGMENT_NAME` 是插件段名。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。每个插件只生成一个 segment；框架会先汇总该插件全部 hook dispatcher、寄存器 wrapper、编译后代码、常量数据和重定位所需空间，再创建最终大小的 segment。插件代码和常量只存放一份，多个 `hook`/`pre_hook` 共用它们。
 
 ## 标准 API
 
@@ -177,7 +177,39 @@ target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
 
 插件按 C++17 编译，并关闭异常、RTTI 和线程安全静态初始化。推荐使用简单类型、普通函数及框架内置的 `vector<T>` 和 `string`（使用目标堆/malloc，无需额外配置）。避免依赖异常、完整 libc++ 容器和复杂全局构造。
 
-## 构建配置（推荐）
+## 构建配置
+
+命令行工具使用 C++17 和 CMake 3.24+ 构建，Mach-O/ELF 的解析与写回能力已内置，不需要下载或安装第三方二进制库。所有平台只需要 CMake、一个 C++17 编译器和 LLVM/Clang；Clang 负责把 `.cpp` 插件和注入汇编编译成 AArch64 中间对象。
+
+### macOS
+
+确认系统已有 `clang` 和 `clang++`，然后安装 CMake：
+
+```bash
+clang --version
+clang++ --version
+brew install cmake
+./build.sh
+```
+
+### Linux
+
+安装 CMake 和 Clang 后运行构建脚本。例如 Debian/Ubuntu：
+
+```bash
+sudo apt install cmake clang
+./build.sh
+```
+
+### Windows
+
+安装 MSVC 构建工具、CMake 和 LLVM，然后运行构建脚本：
+
+```powershell
+winget install Kitware.CMake LLVM.LLVM
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+.\build.bat
+```
 
 编辑项目根目录的 `armcave.conf`：
 
@@ -192,14 +224,20 @@ output = binaries/bin.patched
 
 | 文件 | 平台 |
 |---|---|
-| `./build.sh` | Linux / macOS 终端 |
-| 双击 `build.command` | macOS Finder |
+| `build.sh` | Linux / macOS 终端 |
 | `build.bat` | Windows |
 
-或直接调用 CLI：
+脚本会自动配置并编译 `build/armcave`。也可以手动构建：
 
 ```bash
-python3 armcave.py binaries/AppBinary -o binaries/AppBinary.patched --plugins plugins
-python3 armcave.py binaries/AppBinary --plugin-whitelist arc_rating.cpp -o out.patched
-python3 armcave.py binaries/AppBinary --plugin-blacklist arc_autoplay.cpp -o out.patched
+cmake -S . -B build
+cmake --build build --config Release
+```
+
+直接调用 CLI：
+
+```bash
+build/armcave binaries/AppBinary -o binaries/AppBinary.patched --plugins plugins
+build/armcave binaries/AppBinary --plugin-whitelist arc_rating.cpp -o out.patched
+build/armcave binaries/AppBinary --plugin-blacklist arc_autoplay.cpp -o out.patched
 ```

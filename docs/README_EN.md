@@ -6,8 +6,8 @@
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
   <img src="https://img.shields.io/badge/Apple-iOS%20Mach--O-lightgrey?logo=apple" alt="Apple">
     <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
-  <img src="https://img.shields.io/badge/Language-Python%203-yellow?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/Binary-LIEF-orange?logo=bookstack" alt="LIEF">
+  <img src="https://img.shields.io/badge/Language-C%2B%2B17-blue?logo=cplusplus" alt="C++17">
+  <img src="https://img.shields.io/badge/Binary-Built--in-orange" alt="Built-in binary support">
 </p>
 
 ArmCaveHook is an AArch64 static hooking framework. Plugins are written in `.cpp`, and the framework compiles them into code cave sections, then patches the target binary according to the plugin's entry declarations.
@@ -37,7 +37,7 @@ void init(void) {
 }
 ```
 
-`SEGMENT_NAME` is the section name prefix. Mach-O uses `__testhook0`, `__testhook1`, ELF uses `.testhook0`, `.testhook1`. The section size is automatically calculated by the framework based on the compiled code, constant data, relocations, and wrappers. `hook`/`pre_hook`/`cave` are auto-numbered by action order to prevent multiple actions from sharing the same cave.
+`SEGMENT_NAME` is the plugin segment name. Mach-O uses `__testhook`, while ELF uses `.testhook`. Each plugin creates exactly one segment. The framework first totals the space required by all hook dispatchers, register wrappers, compiled code, constant data, and relocations, then creates the final-sized segment. Plugin code and constants are stored once and shared by all `hook`/`pre_hook` actions.
 
 ## Standard API
 
@@ -177,7 +177,39 @@ target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
 
 Plugins are compiled as C++17 with exceptions, RTTI, and thread-safe static initialization disabled. Simple types, plain functions, and the built-in `vector<T>` and `string` (using target heap/malloc, no extra configuration needed) are recommended. Avoid depending on exceptions, full libc++ containers, and complex global constructors.
 
-## Build Configuration (Recommended)
+## Build Configuration
+
+The command-line tool is built with C++17 and CMake 3.24+. Mach-O/ELF parsing and rewriting are built in, so no third-party binary library is downloaded or installed. Every host only needs CMake, a C++17 compiler, and LLVM/Clang. Clang compiles `.cpp` plugins and assembles AArch64 instructions into the intermediate objects consumed by the patcher.
+
+### macOS
+
+Confirm that `clang` and `clang++` are available, then install CMake:
+
+```bash
+clang --version
+clang++ --version
+brew install cmake
+./build.sh
+```
+
+### Linux
+
+Install CMake and Clang, then run the build script. For example on Debian/Ubuntu:
+
+```bash
+sudo apt install cmake clang
+./build.sh
+```
+
+### Windows
+
+Install the MSVC build tools, CMake, and LLVM, then run the build script:
+
+```powershell
+winget install Kitware.CMake LLVM.LLVM
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+.\build.bat
+```
 
 Edit `armcave.conf` in the project root:
 
@@ -192,14 +224,20 @@ Then use the build script for your platform:
 
 | File | Platform |
 |---|---|
-| `./build.sh` | Linux / macOS terminal |
-| Double-click `build.command` | macOS Finder |
+| `build.sh` | Linux / macOS terminal |
 | `build.bat` | Windows |
 
-Or call the CLI directly:
+The scripts configure and build `build/armcave` automatically. To build manually:
 
 ```bash
-python3 armcave.py binaries/AppBinary -o binaries/AppBinary.patched --plugins plugins
-python3 armcave.py binaries/AppBinary --plugin-whitelist arc_rating.cpp -o out.patched
-python3 armcave.py binaries/AppBinary --plugin-blacklist arc_autoplay.cpp -o out.patched
+cmake -S . -B build
+cmake --build build --config Release
+```
+
+Then call the CLI directly:
+
+```bash
+build/armcave binaries/AppBinary -o binaries/AppBinary.patched --plugins plugins
+build/armcave binaries/AppBinary --plugin-whitelist arc_rating.cpp -o out.patched
+build/armcave binaries/AppBinary --plugin-blacklist arc_autoplay.cpp -o out.patched
 ```

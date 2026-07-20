@@ -1,5 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
+cd /d "%~dp0"
 
 set "CONF=armcave.conf"
 if not exist "%CONF%" (
@@ -32,9 +33,39 @@ if "%output%"=="" (
     exit /b 1
 )
 
-set "extra="
-if defined wl set "extra=--plugin-whitelist %wl%"
-if defined bl set "extra=%extra% --plugin-blacklist %bl%"
+cmake -S . -B build
+if errorlevel 1 (
+    echo Error: CMake configuration failed.
+    pause
+    exit /b 1
+)
 
-python armcave.py "%input%" -o "%output%" --plugins "%plugins%" %extra%
+cmake --build build --config Release
+if errorlevel 1 (
+    echo Error: C++ build failed.
+    pause
+    exit /b 1
+)
+
+set "cli=build\armcave.exe"
+if not exist "%cli%" set "cli=build\Release\armcave.exe"
+if not exist "%cli%" (
+    echo Error: armcave executable not found after build.
+    pause
+    exit /b 1
+)
+
+if defined wl (
+    if defined bl (
+        "%cli%" "%input%" -o "%output%" --plugins "%plugins%" --plugin-whitelist "%wl%" --plugin-blacklist "%bl%"
+    ) else (
+        "%cli%" "%input%" -o "%output%" --plugins "%plugins%" --plugin-whitelist "%wl%"
+    )
+) else (
+    if defined bl (
+        "%cli%" "%input%" -o "%output%" --plugins "%plugins%" --plugin-blacklist "%bl%"
+    ) else (
+        "%cli%" "%input%" -o "%output%" --plugins "%plugins%"
+    )
+)
 pause
