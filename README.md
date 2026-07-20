@@ -1,6 +1,6 @@
 # ArmCaveHook
 
-中文 | [English](docs/README_EN.md)
+中文 | [English](README_EN.md)
 
 <p align="center">
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
@@ -224,20 +224,19 @@ output = binaries/bin.patched
 
 | 文件 | 平台 |
 |---|---|
-| `build.sh` | Linux / macOS 终端 |
+| `build.sh` | Linux / macOS |
 | `build.bat` | Windows |
 
-脚本会自动配置并编译 `build/armcave`。也可以手动构建：
+脚本会自动配置并编译 `build/armcave`。
 
-```bash
-cmake -S . -B build
-cmake --build build --config Release
-```
+## 跨平台支持状态
 
-直接调用 CLI：
-
-```bash
-build/armcave binaries/AppBinary -o binaries/AppBinary.patched --plugins plugins
-build/armcave binaries/AppBinary --plugin-whitelist arc_rating.cpp -o out.patched
-build/armcave binaries/AppBinary --plugin-blacklist arc_autoplay.cpp -o out.patched
-```
+- [x] macOS 宿主编译及 ARM64 Mach-O 插件注入
+- [x] Mach-O 按插件合并计算单个 segment 大小
+- [x] Android ARM64 ELF 基础解析、segment 写入及空 hook 结构验证
+- [ ] Android ELF 动态符号、PLT/GOT 及重定位解析
+- [ ] Android 插件中 `target_fn`、`target_obj`、`string` 和 `vector<T>` 完整支持
+- [ ] 无 section header table 的深度裁剪 Android ELF 支持
+- [ ] Linux 宿主编译及端到端插件注入验证
+- [ ] Windows 宿主编译及端到端插件注入验证
+- [ ] Linux/Windows 生成 Mach-O 后的外部签名流程验证

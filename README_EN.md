@@ -1,6 +1,6 @@
 # ArmCaveHook
 
-[中文](../README.md) | English
+[中文](README.md) | English
 
 <p align="center">
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
@@ -224,20 +224,19 @@ Then use the build script for your platform:
 
 | File | Platform |
 |---|---|
-| `build.sh` | Linux / macOS terminal |
+| `build.sh` | Linux / macOS |
 | `build.bat` | Windows |
 
-The scripts configure and build `build/armcave` automatically. To build manually:
+The scripts configure and build `build/armcave` automatically.
 
-```bash
-cmake -S . -B build
-cmake --build build --config Release
-```
+## Cross-Platform Support Status
 
-Then call the CLI directly:
-
-```bash
-build/armcave binaries/AppBinary -o binaries/AppBinary.patched --plugins plugins
-build/armcave binaries/AppBinary --plugin-whitelist arc_rating.cpp -o out.patched
-build/armcave binaries/AppBinary --plugin-blacklist arc_autoplay.cpp -o out.patched
-```
+- [x] macOS host build and ARM64 Mach-O plugin injection
+- [x] One correctly sized Mach-O segment per plugin
+- [x] Basic Android ARM64 ELF parsing, segment writing, and empty-hook structure validation
+- [ ] Android ELF dynamic symbol, PLT/GOT, and relocation parsing
+- [ ] Complete `target_fn`, `target_obj`, `string`, and `vector<T>` support in Android plugins
+- [ ] Support for heavily stripped Android ELF files without a section header table
+- [ ] Linux host build and end-to-end plugin injection validation
+- [ ] Windows host build and end-to-end plugin injection validation
+- [ ] External Mach-O signing workflow validation on Linux and Windows
