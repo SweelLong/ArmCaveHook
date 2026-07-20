@@ -229,14 +229,11 @@ output = binaries/bin.patched
 
 脚本会自动配置并编译 `build/armcave`。
 
-## 跨平台支持状态
+## 目标二进制支持状态
 
-- [x] macOS 宿主编译及 ARM64 Mach-O 插件注入
-- [x] Mach-O 按插件合并计算单个 segment 大小
-- [x] Android ARM64 ELF 基础解析、segment 写入及空 hook 结构验证
-- [ ] Android ELF 动态符号、PLT/GOT 及重定位解析
-- [ ] Android 插件中 `target_fn`、`target_obj`、`string` 和 `vector<T>` 完整支持
-- [ ] 无 section header table 的深度裁剪 Android ELF 支持
-- [ ] Linux 宿主编译及端到端插件注入验证
-- [ ] Windows 宿主编译及端到端插件注入验证
-- [ ] Linux/Windows 生成 Mach-O 后的外部签名流程验证
+- [x] iOS AArch64 Mach-O 解析、写回及插件注入
+- [x] iOS AArch64 Mach-O 按插件精确计算单个 segment 大小
+- [x] Android AArch64 ELF 基础解析、segment 写入及空 hook 结构验证
+- [ ] Android AArch64 ELF 动态符号、PLT/GOT 及重定位解析
+- [ ] Android AArch64 ELF 插件中 `target_fn`、`target_obj`、`string` 和 `vector<T>` 完整支持
+- [ ] 无 section header table 的深度裁剪 Android AArch64 ELF 支持

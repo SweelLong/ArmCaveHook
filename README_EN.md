@@ -229,14 +229,11 @@ Then use the build script for your platform:
 
 The scripts configure and build `build/armcave` automatically.
 
-## Cross-Platform Support Status
+## Target Binary Support Status
 
-- [x] macOS host build and ARM64 Mach-O plugin injection
-- [x] One correctly sized Mach-O segment per plugin
-- [x] Basic Android ARM64 ELF parsing, segment writing, and empty-hook structure validation
-- [ ] Android ELF dynamic symbol, PLT/GOT, and relocation parsing
-- [ ] Complete `target_fn`, `target_obj`, `string`, and `vector<T>` support in Android plugins
-- [ ] Support for heavily stripped Android ELF files without a section header table
-- [ ] Linux host build and end-to-end plugin injection validation
-- [ ] Windows host build and end-to-end plugin injection validation
-- [ ] External Mach-O signing workflow validation on Linux and Windows
+- [x] iOS AArch64 Mach-O parsing, rewriting, and plugin injection
+- [x] One exactly sized iOS AArch64 Mach-O segment per plugin
+- [x] Basic Android AArch64 ELF parsing, segment writing, and empty-hook structure validation
+- [ ] Android AArch64 ELF dynamic symbol, PLT/GOT, and relocation parsing
+- [ ] Complete `target_fn`, `target_obj`, `string`, and `vector<T>` support in Android AArch64 ELF plugins
+- [ ] Support for heavily stripped Android AArch64 ELF files without a section header table
