@@ -5,7 +5,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
   <img src="https://img.shields.io/badge/Apple-iOS%20Mach--O-lightgrey?logo=apple" alt="Apple">
-    <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
+  <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
   <img src="https://img.shields.io/badge/Language-C%2B%2B17-blue?logo=cplusplus" alt="C++17">
   <img src="https://img.shields.io/badge/Binary-Built--in-orange" alt="Built-in binary support">
 </p>
@@ -220,6 +220,22 @@ output = binaries/bin.patched
 # plugin_blacklist = arc_test.cpp
 ```
 
+也可以直接传入参数；命令行参数优先于 `ARMCAVE_*` 环境变量，环境变量优先于 `armcave.conf`：
+
+```bash
+./build.sh --input binaries/libcocos2dcpp.so \
+  --output binaries/libcocos2dcpp.patched.so \
+  --plugin-whitelist arc_rating_so.cpp
+```
+
+目标使用其他分配器时，可在插件包含 `armcave.h` 前配置导出符号：
+
+```cpp
+#define ARMCAVE_MALLOC_SYMBOL "je_malloc"
+#define ARMCAVE_FREE_SYMBOL "je_free"
+#include "armcave.h"
+```
+
 然后用对应平台的构建脚本：
 
 | 文件 | 平台 |
@@ -229,12 +245,20 @@ output = binaries/bin.patched
 
 脚本会自动配置并编译 `build/armcave`。
 
-## 目标二进制支持状态
+## TODO
 
-- [x] iOS AArch64 Mach-O 插件注入
-- [x] Android AArch64 ELF 插件注入
-
-当前限制：
-
-- 固定 VMA 仅适用于对应目标版本，升级目标二进制后需要重新定位地址。
-- 被目标 ELF 完全隐藏或移除的符号仍需使用 `target_va_fn` / `target_addr` 固定地址定位。
+- [x] 支持 iOS AArch64 Mach-O 插件注入。
+- [x] 支持 Android AArch64 ELF 插件注入。
+- [ ] 替换自研二进制解析器：评估并迁移至 LIEF 或 LLVM 后端，增强对加壳、SHT 压缩和异常段结构的兼容性，避免解析失败直接中止。
+- [x] 设计可配置内存分配器接口：通过动态符号 / PLT 解析堆函数，并允许插件配置 tcmalloc、jemalloc 等替代实现的导出符号。
+- [ ] 重构 `string` / `vector` ABI 适配：在 Apple libc++、Android NDK libc++ 之外增加 GNU libstdc++、MSVC 等布局的编译期配置或自动选择。
+- [x] 为容器操作添加显式错误处理：在 `-fno-exceptions` / `-fno-rtti` 环境下，为扩容、追加、容量溢出和分配失败提供 `trap` 保护。
+- [ ] 实现远跳转 trampoline：当 AArch64 `B/BL` 超出正负 128 MiB 范围时，自动生成间接绝对跳转序列。
+- [x] 解决多插件符号冲突：插件独立编译、使用独立段名和符号映射，支持不同插件声明同名 `replacement` / `init` 函数。
+- [x] 增强跨平台构建脚本：检测 CMake、Clang/LLVM 和 MSVC 环境，并允许命令行参数或环境变量覆盖 `armcave.conf`，便于 CI/CD 和批量处理。
+- [ ] 补充性能基准测试：测量 Hook 前后延迟，并与 Frida Stalker、Dobby、E9Patch 等工具进行可复现的横向对比。
+- [ ] 提升论文的学术贡献层次：补充静态重写、C++ 语义抽取与自动化修补的形式化描述，以及重定位和 PAC 处理的正确性分析。
+- [ ] 使用至少三款真实 arm64 大型应用进行压力测试，记录并修复符号、跳转和重定位失败，目标成功率不低于 90%。
+- [ ] 增强错误日志与诊断信息：输出结构化失败原因、地址、重定位类型和上下文，替代笼统的 `SKIP` / `errors` 提示。
+- [ ] 消除固定 VMA 的版本绑定：组合动态符号、PLT/GOT、字节签名、调用图锚点和用户规则，升级目标二进制后优先自动重定位。
+- [ ] 改善隐藏或移除符号的定位：在没有符号元数据时使用稳定代码签名和用户规则，减少对 `target_va_fn` / `target_addr` 固定地址配置的依赖。

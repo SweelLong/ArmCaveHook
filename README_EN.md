@@ -5,7 +5,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
   <img src="https://img.shields.io/badge/Apple-iOS%20Mach--O-lightgrey?logo=apple" alt="Apple">
-    <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
+  <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
   <img src="https://img.shields.io/badge/Language-C%2B%2B17-blue?logo=cplusplus" alt="C++17">
   <img src="https://img.shields.io/badge/Binary-Built--in-orange" alt="Built-in binary support">
 </p>
@@ -220,6 +220,22 @@ output = binaries/bin.patched
 # plugin_blacklist = arc_test.cpp
 ```
 
+Arguments may also be supplied directly. Command-line options override `ARMCAVE_*` environment variables, which override `armcave.conf`:
+
+```bash
+./build.sh --input binaries/libcocos2dcpp.so \
+  --output binaries/libcocos2dcpp.patched.so \
+  --plugin-whitelist arc_rating_so.cpp
+```
+
+For a target using another allocator, configure its exported symbols before including `armcave.h`:
+
+```cpp
+#define ARMCAVE_MALLOC_SYMBOL "je_malloc"
+#define ARMCAVE_FREE_SYMBOL "je_free"
+#include "armcave.h"
+```
+
 Then use the build script for your platform:
 
 | File | Platform |
@@ -229,12 +245,20 @@ Then use the build script for your platform:
 
 The scripts configure and build `build/armcave` automatically.
 
-## Target Binary Support Status
+## TODO
 
-- [x] iOS AArch64 Mach-O plugin injection
-- [x] Android AArch64 ELF plugin injection
-
-Current limitations:
-
-- Fixed VMAs are specific to the matching target build and must be relocated after a binary update.
-- Symbols fully hidden or removed from the target ELF still require fixed-address `target_va_fn` / `target_addr` declarations.
+- [x] Support iOS AArch64 Mach-O plugin injection.
+- [x] Support Android AArch64 ELF plugin injection.
+- [ ] Replace the in-house binary parser: evaluate and migrate to a LIEF or LLVM backend for packed binaries, compressed SHT data, and unusual segment layouts without aborting on parser failures.
+- [x] Design a configurable allocator interface: resolve heap functions through dynamic symbols / PLT entries and allow plugins to select exported tcmalloc or jemalloc symbols.
+- [ ] Generalize `string` / `vector` ABI support: add compile-time configuration or automatic selection for GNU libstdc++ and MSVC in addition to Apple and Android NDK libc++.
+- [x] Add explicit container error handling with `trap` guards for growth, append, capacity overflow, and allocation failure under `-fno-exceptions` / `-fno-rtti`.
+- [ ] Implement far-jump trampolines: emit an indirect absolute jump when an AArch64 `B/BL` target is outside the plus or minus 128 MiB range.
+- [x] Isolate symbols across plugins: plugins are compiled independently and use separate segment names and symbol maps, allowing duplicate `replacement` / `init` names.
+- [x] Harden cross-platform build scripts: detect CMake, Clang/LLVM, and MSVC, and allow command-line arguments or environment variables to override `armcave.conf` for CI/CD and batch use.
+- [ ] Add reproducible performance benchmarks for Hook overhead and comparisons with Frida Stalker, Dobby, and E9Patch.
+- [ ] Strengthen the academic contribution with a formal account of static rewriting, C++ semantic extraction, automated patching, relocation correctness, and PAC handling.
+- [ ] Stress-test at least three real-world large arm64 applications, track symbol/jump/relocation failures, and target a success rate of at least 90%.
+- [ ] Improve diagnostics with structured failure reasons, addresses, relocation types, and context instead of generic `SKIP` / `errors` messages.
+- [ ] Remove fixed-VMA version coupling using dynamic symbols, PLT/GOT, byte signatures, call-graph anchors, and user rules to relocate automatically after target upgrades.
+- [ ] Improve location of hidden or removed symbols with stable code signatures and user rules, reducing reliance on fixed `target_va_fn` / `target_addr` configuration.
