@@ -289,9 +289,16 @@ bool BinaryImage::parse_elf() {
     sections_.clear();
     symbols_.clear();
     indirect_symbols_.clear();
+    imports_.clear();
+    uint64_t dynamic_offset = 0, dynamic_size = 0;
     for (uint16_t i = 0; i < phnum; ++i) {
         size_t offset = phoff + (size_t)i * phentsize;
-        if (read_le<uint32_t>(data_, offset) != 1) continue;
+        uint32_t type = read_le<uint32_t>(data_, offset);
+        if (type == 2) {
+            dynamic_offset = read_le<uint64_t>(data_, offset + 8);
+            dynamic_size = read_le<uint64_t>(data_, offset + 32);
+        }
+        if (type != 1) continue;
         BinarySegment segment;
         segment.file_offset = read_le<uint64_t>(data_, offset + 8);
         segment.virtual_address = read_le<uint64_t>(data_, offset + 16);
@@ -303,6 +310,8 @@ bool BinaryImage::parse_elf() {
         segment.header_offset = offset;
         segments_.push_back(std::move(segment));
     }
+
+    parse_elf_dynamic(dynamic_offset, dynamic_size);
 
     if (shnum == 0 || shentsize < 64 || shoff + (uint64_t)shentsize * shnum > data_.size())
         return true;
@@ -325,6 +334,145 @@ bool BinaryImage::parse_elf() {
         sections_.push_back(std::move(section));
     }
     return true;
+}
+
+void BinaryImage::parse_elf_dynamic(uint64_t dynamic_offset, uint64_t dynamic_size) {
+    if (!dynamic_offset || dynamic_offset > data_.size() ||
+        dynamic_size > data_.size() - dynamic_offset)
+        return;
+
+    uint64_t symtab_va = 0, strtab_va = 0, strsz = 0, syment = 24;
+    uint64_t hash_va = 0, gnu_hash_va = 0, rela_va = 0, relasz = 0, relaent = 24;
+    uint64_t jmprel_va = 0, pltrelsz = 0, pltgot_va = 0;
+    for (uint64_t off = dynamic_offset; off + 16 <= dynamic_offset + dynamic_size; off += 16) {
+        int64_t tag = read_le<int64_t>(data_, (size_t)off);
+        uint64_t value = read_le<uint64_t>(data_, (size_t)off + 8);
+        if (tag == 0) break;
+        switch (tag) {
+        case 4: hash_va = value; break;
+        case 0x6ffffef5: gnu_hash_va = value; break;
+        case 5: strtab_va = value; break;
+        case 6: symtab_va = value; break;
+        case 7: rela_va = value; break;
+        case 8: relasz = value; break;
+        case 9: relaent = value; break;
+        case 10: strsz = value; break;
+        case 11: syment = value; break;
+        case 2: pltrelsz = value; break;
+        case 3: pltgot_va = value; break;
+        case 23: jmprel_va = value; break;
+        default: break;
+        }
+    }
+
+    auto symtab_off = virtual_address_to_offset(symtab_va);
+    auto strtab_off = virtual_address_to_offset(strtab_va);
+    if (!symtab_off || !strtab_off || syment < 24 || !strsz ||
+        *strtab_off > data_.size() || strsz > data_.size() - *strtab_off)
+        return;
+
+    uint64_t symbol_count = 0;
+    if (hash_va) {
+        auto hash_off = virtual_address_to_offset(hash_va);
+        if (hash_off && *hash_off + 8 <= data_.size())
+            symbol_count = read_le<uint32_t>(data_, (size_t)*hash_off + 4);
+    }
+    if (!symbol_count && gnu_hash_va) {
+        auto hash_off = virtual_address_to_offset(gnu_hash_va);
+        if (hash_off && *hash_off + 16 <= data_.size()) {
+            uint32_t buckets = read_le<uint32_t>(data_, (size_t)*hash_off);
+            uint32_t first_symbol = read_le<uint32_t>(data_, (size_t)*hash_off + 4);
+            uint32_t bloom_words = read_le<uint32_t>(data_, (size_t)*hash_off + 8);
+            uint64_t buckets_off = *hash_off + 16 + (uint64_t)bloom_words * 8;
+            if (buckets <= 1000000 && buckets_off <= data_.size() &&
+                (uint64_t)buckets * 4 <= data_.size() - buckets_off) {
+                uint32_t last_symbol = 0;
+                for (uint32_t i = 0; i < buckets; ++i)
+                    last_symbol = std::max(last_symbol,
+                        read_le<uint32_t>(data_, (size_t)buckets_off + (size_t)i * 4));
+                if (last_symbol >= first_symbol) {
+                    uint64_t chain_off = buckets_off + (uint64_t)buckets * 4 +
+                                         (uint64_t)(last_symbol - first_symbol) * 4;
+                    while (chain_off + 4 <= data_.size() && last_symbol < 1000000) {
+                        uint32_t chain = read_le<uint32_t>(data_, (size_t)chain_off);
+                        ++last_symbol;
+                        chain_off += 4;
+                        if (chain & 1) break;
+                    }
+                    symbol_count = last_symbol;
+                }
+            }
+        }
+    }
+    if (!symbol_count && strtab_va > symtab_va)
+        symbol_count = (strtab_va - symtab_va) / syment;
+    symbol_count = std::min<uint64_t>(symbol_count, 1000000);
+    if (*symtab_off > data_.size() || symbol_count > (data_.size() - *symtab_off) / syment)
+        return;
+
+    symbols_.reserve((size_t)symbol_count);
+    for (uint64_t i = 0; i < symbol_count; ++i) {
+        size_t off = (size_t)(*symtab_off + i * syment);
+        BinarySymbol symbol;
+        symbol.name = table_string(data_, *strtab_off, strsz,
+                                   read_le<uint32_t>(data_, off));
+        uint16_t section_index = read_le<uint16_t>(data_, off + 6);
+        symbol.type = section_index ? 0x0e : 0;
+        symbol.section_index = section_index ? 1 : 0;
+        symbol.value = read_le<uint64_t>(data_, off + 8);
+        symbols_.push_back(std::move(symbol));
+    }
+
+    auto parse_relas = [&](uint64_t table_va, uint64_t table_size) {
+        if (!table_va || !table_size || relaent < 24) return;
+        auto table_off = virtual_address_to_offset(table_va);
+        if (!table_off || *table_off > data_.size() ||
+            table_size > data_.size() - *table_off) return;
+        uint64_t count = table_size / relaent;
+        for (uint64_t i = 0; i < count; ++i) {
+            size_t off = (size_t)(*table_off + i * relaent);
+            uint64_t slot = read_le<uint64_t>(data_, off);
+            uint64_t info = read_le<uint64_t>(data_, off + 8);
+            uint32_t type = (uint32_t)info;
+            uint32_t symbol_index = (uint32_t)(info >> 32);
+            if (symbol_index >= symbols_.size() || symbols_[symbol_index].name.empty()) continue;
+            if (type != 1025 && type != 1026 && type != 1027) continue;
+            BinaryImport item;
+            item.name = symbols_[symbol_index].name;
+            item.slot_address = slot;
+            imports_.push_back(std::move(item));
+        }
+    };
+    parse_relas(rela_va, relasz);
+    parse_relas(jmprel_va, pltrelsz);
+
+    // Associate AArch64 PLT entries with their GOT relocation slots. This is
+    // derived from instructions, so it remains available without sections.
+    if (pltgot_va) {
+        for (const auto &segment : segments_) {
+            if ((segment.init_protection & 1) == 0 || segment.file_offset > data_.size()) continue;
+            uint64_t length = std::min<uint64_t>(segment.file_size,
+                                                 data_.size() - segment.file_offset);
+            for (uint64_t rel = 0; rel + 16 <= length; rel += 4) {
+                size_t off = (size_t)(segment.file_offset + rel);
+                uint32_t adrp = read_le<uint32_t>(data_, off);
+                uint32_t ldr = read_le<uint32_t>(data_, off + 4);
+                uint32_t add = read_le<uint32_t>(data_, off + 8);
+                uint32_t br = read_le<uint32_t>(data_, off + 12);
+                if ((adrp & 0x9f00001f) != 0x90000010 ||
+                    (ldr & 0xffc003ff) != 0xf9400211 ||
+                    (add & 0xffc003ff) != 0x91000210 || br != 0xd61f0220)
+                    continue;
+                int64_t imm21 = (int64_t)(((adrp >> 29) & 3) | ((adrp >> 3) & 0x1ffffc));
+                if (imm21 & 0x100000) imm21 -= 0x200000;
+                uint64_t pc = segment.virtual_address + rel;
+                uint64_t page = (pc & ~0xfffULL) + (imm21 << 12);
+                uint64_t slot = page + (((ldr >> 10) & 0xfff) * 8ULL);
+                for (auto &item : imports_)
+                    if (item.slot_address == slot) item.stub_address = pc;
+            }
+        }
+    }
 }
 
 BinarySection *BinaryImage::section(const std::string &name) {
@@ -375,6 +523,25 @@ const BinarySymbol *BinaryImage::symbol(size_t index) const {
 
 const std::string *BinaryImage::indirect_symbol(size_t index) const {
     return index < indirect_symbols_.size() ? &indirect_symbols_[index] : nullptr;
+}
+
+std::optional<uint64_t> BinaryImage::symbol_address(const std::string &name) const {
+    for (const auto &symbol : symbols_)
+        if (symbol.name == name && !symbol.undefined() && symbol.value)
+            return symbol.value;
+    return std::nullopt;
+}
+
+std::optional<uint64_t> BinaryImage::import_slot(const std::string &name) const {
+    for (const auto &item : imports_)
+        if (item.name == name && item.slot_address) return item.slot_address;
+    return std::nullopt;
+}
+
+std::optional<uint64_t> BinaryImage::import_stub(const std::string &name) const {
+    for (const auto &item : imports_)
+        if (item.name == name && item.stub_address) return item.stub_address;
+    return std::nullopt;
 }
 
 void BinaryImage::add_executable_section(const std::string &name, int size,
@@ -578,23 +745,11 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
     uint16_t shentsize = read_le<uint16_t>(data_, 58);
     uint16_t shnum = read_le<uint16_t>(data_, 60);
     uint16_t shstrndx = read_le<uint16_t>(data_, 62);
-    if (phentsize < 56 || shentsize < 64 || shnum == 0 || shstrndx >= shnum)
-        throw std::runtime_error("ELF lacks writable program/section tables");
-    if (phnum == std::numeric_limits<uint16_t>::max() ||
-        shnum == std::numeric_limits<uint16_t>::max())
+    if (phentsize < 56 || old_phoff > data_.size() ||
+        (uint64_t)phnum * phentsize > data_.size() - old_phoff)
+        throw std::runtime_error("ELF lacks a writable program table");
+    if (phnum == std::numeric_limits<uint16_t>::max())
         throw std::runtime_error("ELF table is full");
-
-    size_t old_names_header = old_shoff + (size_t)shstrndx * shentsize;
-    uint64_t old_names_offset = read_le<uint64_t>(data_, old_names_header + 24);
-    uint64_t old_names_size = read_le<uint64_t>(data_, old_names_header + 32);
-    if (old_names_offset > data_.size() || old_names_size > data_.size() - old_names_offset)
-        throw std::runtime_error("invalid ELF section name table");
-    std::vector<uint8_t> names(data_.begin() + old_names_offset,
-                               data_.begin() + old_names_offset + old_names_size);
-    if (names.empty()) names.push_back(0);
-    uint32_t name_offset = (uint32_t)names.size();
-    names.insert(names.end(), name.begin(), name.end());
-    names.push_back(0);
 
     uint64_t page_size = 0x1000;
     uint64_t next_va = 0;
@@ -608,6 +763,85 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
     uint64_t ph_table_size = (uint64_t)(phnum + 1) * phentsize;
     uint64_t content_offset = load_offset + align_up(ph_table_size, 16);
     uint64_t content_va = next_va + (content_offset - load_offset);
+
+    const bool has_sections = shnum != 0 && shentsize >= 64 && shstrndx < shnum &&
+        old_shoff <= data_.size() && (uint64_t)shnum * shentsize <= data_.size() - old_shoff;
+    if (!has_sections) {
+        std::vector<uint8_t> names(1, 0);
+        uint32_t name_offset = (uint32_t)names.size();
+        names.insert(names.end(), name.begin(), name.end());
+        names.push_back(0);
+        uint32_t shstr_name_offset = (uint32_t)names.size();
+        const char shstr_name[] = ".shstrtab";
+        names.insert(names.end(), shstr_name, shstr_name + sizeof(shstr_name));
+        uint64_t names_offset = content_offset + size;
+        uint64_t section_table_offset = align_up(names_offset + names.size(), 8);
+        uint64_t end_offset = section_table_offset + 3 * 64;
+        uint64_t load_size = names_offset - load_offset;
+        std::vector<uint8_t> old_phdrs(data_.begin() + old_phoff,
+                                       data_.begin() + old_phoff + (uint64_t)phnum * phentsize);
+        data_.resize((size_t)end_offset, 0);
+        std::copy(old_phdrs.begin(), old_phdrs.end(), data_.begin() + load_offset);
+        for (uint16_t i = 0; i < phnum; ++i) {
+            size_t offset = load_offset + (size_t)i * phentsize;
+            if (read_le<uint32_t>(data_, offset) == 6) {
+                write_le<uint64_t>(data_, offset + 8, load_offset);
+                write_le<uint64_t>(data_, offset + 16, next_va);
+                write_le<uint64_t>(data_, offset + 24, next_va);
+                write_le<uint64_t>(data_, offset + 32, ph_table_size);
+                write_le<uint64_t>(data_, offset + 40, ph_table_size);
+                write_le<uint64_t>(data_, offset + 48, 8);
+            }
+        }
+        size_t new_phdr = load_offset + (size_t)phnum * phentsize;
+        write_le<uint32_t>(data_, new_phdr, 1);
+        write_le<uint32_t>(data_, new_phdr + 4, 5);
+        write_le<uint64_t>(data_, new_phdr + 8, load_offset);
+        write_le<uint64_t>(data_, new_phdr + 16, next_va);
+        write_le<uint64_t>(data_, new_phdr + 24, next_va);
+        write_le<uint64_t>(data_, new_phdr + 32, load_size);
+        write_le<uint64_t>(data_, new_phdr + 40, load_size);
+        write_le<uint64_t>(data_, new_phdr + 48, page_size);
+        std::copy(content.begin(), content.end(), data_.begin() + content_offset);
+        std::copy(names.begin(), names.end(), data_.begin() + names_offset);
+        size_t content_shdr = section_table_offset + 64;
+        write_le<uint32_t>(data_, content_shdr, name_offset);
+        write_le<uint32_t>(data_, content_shdr + 4, 1);
+        write_le<uint64_t>(data_, content_shdr + 8, 0x6);
+        write_le<uint64_t>(data_, content_shdr + 16, content_va);
+        write_le<uint64_t>(data_, content_shdr + 24, content_offset);
+        write_le<uint64_t>(data_, content_shdr + 32, (uint64_t)size);
+        write_le<uint64_t>(data_, content_shdr + 48, 16);
+        size_t names_shdr = section_table_offset + 128;
+        write_le<uint32_t>(data_, names_shdr, shstr_name_offset);
+        write_le<uint32_t>(data_, names_shdr + 4, 3);
+        write_le<uint64_t>(data_, names_shdr + 24, names_offset);
+        write_le<uint64_t>(data_, names_shdr + 32, (uint64_t)names.size());
+        write_le<uint64_t>(data_, names_shdr + 48, 1);
+        write_le<uint64_t>(data_, 32, load_offset);
+        write_le<uint64_t>(data_, 40, section_table_offset);
+        write_le<uint16_t>(data_, 56, phnum + 1);
+        write_le<uint16_t>(data_, 58, 64);
+        write_le<uint16_t>(data_, 60, 3);
+        write_le<uint16_t>(data_, 62, 2);
+        if (!parse_elf()) throw std::runtime_error("failed to reparse modified ELF");
+        return;
+    }
+    if (shnum == std::numeric_limits<uint16_t>::max())
+        throw std::runtime_error("ELF section table is full");
+
+    size_t old_names_header = old_shoff + (size_t)shstrndx * shentsize;
+    uint64_t old_names_offset = read_le<uint64_t>(data_, old_names_header + 24);
+    uint64_t old_names_size = read_le<uint64_t>(data_, old_names_header + 32);
+    if (old_names_offset > data_.size() || old_names_size > data_.size() - old_names_offset)
+        throw std::runtime_error("invalid ELF section name table");
+    std::vector<uint8_t> names(data_.begin() + old_names_offset,
+                               data_.begin() + old_names_offset + old_names_size);
+    if (names.empty()) names.push_back(0);
+    uint32_t name_offset = (uint32_t)names.size();
+    names.insert(names.end(), name.begin(), name.end());
+    names.push_back(0);
+
     uint64_t names_offset = content_offset + size;
     uint64_t section_table_offset = align_up(names_offset + names.size(), 8);
     uint64_t end_offset = section_table_offset + (uint64_t)(shnum + 1) * shentsize;

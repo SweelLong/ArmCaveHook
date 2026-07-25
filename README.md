@@ -63,7 +63,7 @@ void init(void) {
 | `vcall(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
 | `object_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
 | `logf(fmt, ...)` | 简单日志输出。 |
-| `string` | 封装 Apple libc++ `std::string` 布局（sizeof=24，SSO up to 22 chars），纯自实现 `assign`/`append`，RAII 析构自动释放堆。 |
+| `string` | 封装目标 libc++ `std::string` 布局（sizeof=24，SSO up to 22 chars），自动适配 Apple libc++ 与 Android NDK libc++，纯自实现 `assign`/`append`。 |
 | `vector<T>` | 动态 C++ 容器，使用目标堆（`malloc`/`free`），支持扩容。 |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | 基础类型别名。 |
 
@@ -231,14 +231,10 @@ output = binaries/bin.patched
 
 ## 目标二进制支持状态
 
-- [x] iOS AArch64 Mach-O 解析、写回及插件注入
-- [x] iOS AArch64 Mach-O 按插件精确计算单个 segment 大小
-- [x] Android AArch64 ELF 解析、写回、插件注入及固定 VMA hook/重定位
-- [x] Android `arc_rating_so.cpp` 插件端到端注入验证
+- [x] iOS AArch64 Mach-O 插件注入
+- [x] Android AArch64 ELF 插件注入
 
-Android AArch64 ELF 已可正常注入插件。当前限制：
+当前限制：
 
 - 固定 VMA 仅适用于对应目标版本，升级目标二进制后需要重新定位地址。
-- ELF 动态符号及 PLT/GOT 自动解析尚未实现，因此 Android 插件目前优先使用 `target_va_fn` 和 `target_addr`。
-- 框架内置 `string` 使用 Apple libc++ 布局；Android `std::__ndk1::string` 需调用目标函数或使用 Android 专用封装。
-- 尚未支持无 section header table 的深度裁剪 ELF。
+- 被目标 ELF 完全隐藏或移除的符号仍需使用 `target_va_fn` / `target_addr` 固定地址定位。

@@ -63,7 +63,7 @@ void init(void) {
 | `vcall(obj, offset)` | Reads a function pointer at a given offset from an object's vtable. |
 | `object_typeinfo(obj)` | Reads the typeinfo pointer before the vtable in Itanium C++ ABI. |
 | `logf(fmt, ...)` | Simple logging output. |
-| `string` | Wraps Apple libc++ `std::string` layout (sizeof=24, SSO up to 22 chars), self-implemented `assign`/`append`, RAII destructor auto-frees heap. |
+| `string` | Wraps the target libc++ `std::string` layout (sizeof=24, SSO up to 22 chars), automatically selecting Apple or Android NDK libc++ layout with self-implemented `assign`/`append`. |
 | `vector<T>` | Dynamic C++ container using target heap (`malloc`/`free`), supports resizing. |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | Basic type aliases. |
 
@@ -231,14 +231,10 @@ The scripts configure and build `build/armcave` automatically.
 
 ## Target Binary Support Status
 
-- [x] iOS AArch64 Mach-O parsing, rewriting, and plugin injection
-- [x] One exactly sized iOS AArch64 Mach-O segment per plugin
-- [x] Android AArch64 ELF parsing, rewriting, plugin injection, and fixed-VMA hooks/relocations
-- [x] End-to-end injection of the Android `arc_rating_so.cpp` plugin
+- [x] iOS AArch64 Mach-O plugin injection
+- [x] Android AArch64 ELF plugin injection
 
-Android AArch64 ELF plugin injection is supported. Current limitations:
+Current limitations:
 
 - Fixed VMAs are specific to the matching target build and must be relocated after a binary update.
-- Automatic ELF dynamic-symbol and PLT/GOT resolution is not implemented, so Android plugins should currently prefer `target_va_fn` and `target_addr`.
-- The built-in `string` uses the Apple libc++ layout; Android `std::__ndk1::string` requires target function calls or an Android-specific wrapper.
-- Heavily stripped ELF files without a section header table are not yet supported.
+- Symbols fully hidden or removed from the target ELF still require fixed-address `target_va_fn` / `target_addr` declarations.

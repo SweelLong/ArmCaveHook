@@ -46,6 +46,15 @@ static int resolve_armcave_tco(const std::string &symbol_name, uint64_t base) {
 }
 
 static int resolve_via_symbol_table(BinaryImage *binary, const std::string &symbol_name) {
+    if (binary->is_elf()) {
+        for (const auto &candidate : names(symbol_name)) {
+            auto direct = binary->symbol_address(candidate);
+            if (direct) return (int)*direct;
+            auto stub = binary->import_stub(candidate);
+            if (stub) return (int)*stub;
+        }
+        return 0;
+    }
     BinarySection *stubs = nullptr;
     for (auto &s : binary->sections())
         if (s.name == "__stubs") { stubs = &s; break; }
@@ -63,6 +72,13 @@ static int resolve_via_symbol_table(BinaryImage *binary, const std::string &symb
 }
 
 static int resolve_import_slot(BinaryImage *binary, const std::string &symbol_name) {
+    if (binary->is_elf()) {
+        for (const auto &candidate : names(symbol_name)) {
+            auto slot = binary->import_slot(candidate);
+            if (slot) return (int)*slot;
+        }
+        return 0;
+    }
     auto ns = names(symbol_name);
     std::set<std::string> name_set(ns.begin(), ns.end());
     for (auto &sec : binary->sections()) {
@@ -82,9 +98,24 @@ static int resolve_import_slot(BinaryImage *binary, const std::string &symbol_na
 std::vector<std::pair<std::string, std::string>> list_available_symbols(
     const std::filesystem::path &binary_path) {
     auto binary = BinaryImage::parse(binary_path);
-    if (!binary || !binary->is_macho())
-        throw std::runtime_error("no Mach-O binary in file");
+    if (!binary)
+        throw std::runtime_error("unsupported binary file");
     std::vector<std::pair<std::string, std::string>> out;
+    if (binary->is_elf()) {
+        for (const auto &symbol : binary->symbols()) {
+            if (symbol.name.empty() || symbol.undefined() || !symbol.value) continue;
+            char addr[32];
+            snprintf(addr, sizeof(addr), "0x%llx", (unsigned long long)symbol.value);
+            out.emplace_back(symbol.name, addr);
+        }
+        for (const auto &item : binary->imports()) {
+            if (item.name.empty() || !item.stub_address) continue;
+            char addr[32];
+            snprintf(addr, sizeof(addr), "0x%llx", (unsigned long long)item.stub_address);
+            out.emplace_back(item.name, addr);
+        }
+        return out;
+    }
     BinarySection *stubs = binary->section("__stubs");
     if (!stubs) return out;
     int size = stubs->reserved2 ? (int)stubs->reserved2 : 12;
@@ -184,7 +215,7 @@ resolve_plugin_relocs(
             if (val == 0 && section.empty()) {
                 dst = resolve_armcave_va(name);
                 if (!dst) dst = resolve_armcave_tco(name, armcave_base);
-                if (!dst && binary->is_macho()) dst = resolve_via_symbol_table(binary.get(), name);
+                if (!dst) dst = resolve_via_symbol_table(binary.get(), name);
             } else {
                 dst = (int)(text_va + val);
             }
@@ -233,7 +264,7 @@ resolve_plugin_relocs(
             if (dst) {
                 patch_page21(text_buf, off, (int)(text_va + off), dst);
             } else {
-                int target = binary->is_macho() ? resolve_import_slot(binary.get(), name) : 0;
+                int target = resolve_import_slot(binary.get(), name);
                 if (!target)
                     throw std::runtime_error("unresolved import slot: " + name);
                 patch_page21(text_buf, off, (int)(text_va + off), target);
@@ -244,7 +275,7 @@ resolve_plugin_relocs(
             if (dst) {
                 patch_ldr_to_add(text_buf, off, dst);
             } else {
-                int target = binary->is_macho() ? resolve_import_slot(binary.get(), name) : 0;
+                int target = resolve_import_slot(binary.get(), name);
                 if (!target)
                     throw std::runtime_error("unresolved import slot: " + name);
                 patch_got_load_pageoff12(text_buf, off, target);

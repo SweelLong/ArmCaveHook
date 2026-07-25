@@ -28,6 +28,12 @@ struct BinarySymbol {
     bool undefined() const;
 };
 
+struct BinaryImport {
+    std::string name;
+    uint64_t slot_address = 0;
+    uint64_t stub_address = 0;
+};
+
 struct BinarySection {
     std::string name;
     std::string segment_name;
@@ -76,6 +82,7 @@ public:
     std::vector<BinarySegment> &segments() { return segments_; }
     const std::vector<BinarySegment> &segments() const { return segments_; }
     const std::vector<BinarySymbol> &symbols() const { return symbols_; }
+    const std::vector<BinaryImport> &imports() const { return imports_; }
 
     BinarySection *section(const std::string &name);
     const BinarySection *section(const std::string &name) const;
@@ -84,6 +91,9 @@ public:
     std::vector<uint8_t> content_from_virtual_address(uint64_t va, size_t size) const;
     const BinarySymbol *symbol(size_t index) const;
     const std::string *indirect_symbol(size_t index) const;
+    std::optional<uint64_t> symbol_address(const std::string &name) const;
+    std::optional<uint64_t> import_slot(const std::string &name) const;
+    std::optional<uint64_t> import_stub(const std::string &name) const;
 
     void add_executable_section(const std::string &name, int size,
                                 const std::vector<uint8_t> &content);
@@ -103,6 +113,7 @@ private:
     void parse_macho_tables(uint32_t symoff, uint32_t nsyms,
                             uint32_t stroff, uint32_t strsize,
                             uint32_t indirectoff, uint32_t nindirect);
+    void parse_elf_dynamic(uint64_t dynamic_offset, uint64_t dynamic_size);
     void add_macho_section(const std::string &name, int size,
                            const std::vector<uint8_t> &content);
     void add_elf_section(const std::string &name, int size,
@@ -117,6 +128,7 @@ private:
     std::vector<BinarySegment> segments_;
     std::vector<BinarySymbol> symbols_;
     std::vector<std::string> indirect_symbols_;
+    std::vector<BinaryImport> imports_;
     uint64_t entrypoint_ = 0;
 
     bool fat_ = false;
