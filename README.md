@@ -233,7 +233,12 @@ output = binaries/bin.patched
 
 - [x] iOS AArch64 Mach-O 解析、写回及插件注入
 - [x] iOS AArch64 Mach-O 按插件精确计算单个 segment 大小
-- [x] Android AArch64 ELF 基础解析、segment 写入及空 hook 结构验证
-- [ ] Android AArch64 ELF 动态符号、PLT/GOT 及重定位解析
-- [ ] Android AArch64 ELF 插件中 `target_fn`、`target_obj`、`string` 和 `vector<T>` 完整支持
-- [ ] 无 section header table 的深度裁剪 Android AArch64 ELF 支持
+- [x] Android AArch64 ELF 解析、写回、插件注入及固定 VMA hook/重定位
+- [x] Android `arc_rating_so.cpp` 插件端到端注入验证
+
+Android AArch64 ELF 已可正常注入插件。当前限制：
+
+- 固定 VMA 仅适用于对应目标版本，升级目标二进制后需要重新定位地址。
+- ELF 动态符号及 PLT/GOT 自动解析尚未实现，因此 Android 插件目前优先使用 `target_va_fn` 和 `target_addr`。
+- 框架内置 `string` 使用 Apple libc++ 布局；Android `std::__ndk1::string` 需调用目标函数或使用 Android 专用封装。
+- 尚未支持无 section header table 的深度裁剪 ELF。

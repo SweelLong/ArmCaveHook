@@ -233,7 +233,12 @@ The scripts configure and build `build/armcave` automatically.
 
 - [x] iOS AArch64 Mach-O parsing, rewriting, and plugin injection
 - [x] One exactly sized iOS AArch64 Mach-O segment per plugin
-- [x] Basic Android AArch64 ELF parsing, segment writing, and empty-hook structure validation
-- [ ] Android AArch64 ELF dynamic symbol, PLT/GOT, and relocation parsing
-- [ ] Complete `target_fn`, `target_obj`, `string`, and `vector<T>` support in Android AArch64 ELF plugins
-- [ ] Support for heavily stripped Android AArch64 ELF files without a section header table
+- [x] Android AArch64 ELF parsing, rewriting, plugin injection, and fixed-VMA hooks/relocations
+- [x] End-to-end injection of the Android `arc_rating_so.cpp` plugin
+
+Android AArch64 ELF plugin injection is supported. Current limitations:
+
+- Fixed VMAs are specific to the matching target build and must be relocated after a binary update.
+- Automatic ELF dynamic-symbol and PLT/GOT resolution is not implemented, so Android plugins should currently prefer `target_va_fn` and `target_addr`.
+- The built-in `string` uses the Apple libc++ layout; Android `std::__ndk1::string` requires target function calls or an Android-specific wrapper.
+- Heavily stripped ELF files without a section header table are not yet supported.
