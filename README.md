@@ -43,16 +43,16 @@ void init(void) {
 
 | API | 作用 |
 |---|---|
-| `hook(addr, handler, ...)` | 函数替代 hook，从目标地址跳到 handler。 |
-| `pre_hook(addr, handler, ...)` | 前置 hook，先调用 handler，再执行被覆盖的原指令并回到原函数。 |
+| `hook(addr, handler, ...)` | 函数替代 hook，从目标地址跳到 handler；末尾可传寄存器名，例如 `x0, x1`，框架会将其传给 handler。 |
+| `pre_hook(addr, handler, ...)` | 前置 hook，先调用 handler，再执行被覆盖的原指令并回到原函数；末尾可传寄存器名，例如 `x20`。 |
 | `inject_asm(addr, "instruction"[, "expected"])` | 汇编并写入 AArch64 指令；提供 `expected` 时，仅在等长的原指令序列匹配时写入。 |
 | `target_fn(ret, name, args, symbol)` | 按符号名声明目标二进制里的函数。 |
 | `target_va_fn(ret, name, args, addr)` | 按固定虚拟地址声明目标二进制里的函数，patch 后生成相对 `BL/B` relocation。 |
 | `target_obj(name, symbol[, type])` | 按符号名声明目标对象；提供 `type` 时声明为强类型对象。 |
-| `target_obj_fn(name, symbol, ...)` | 按符号名声明目标对象函数。 |
+| `target_obj_fn(name, symbol, ...)` | 按符号名声明目标对象函数；末尾参数是函数参数类型，例如 `char`。 |
 | `target_obj_call(fn, obj, ...)` | 调用目标对象函数。 |
 | `target_addr(va)` | 将 VMA 转为运行时地址（ADRP+PAGEOFF12，抗 ASLR），用于数据地址引用。 |
-| `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数（BR26 PC-relative BL，抗 ASLR）。 |
+| `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数（BR26 PC-relative BL，抗 ASLR）；末尾参数是实际调用参数，例如 `a, b`，`args` 是参数类型列表，例如 `(int, int)`。 |
 | `target_call_offset(ret, offset, args, ...)` | 按文件偏移调用目标内部函数（自动加 `ARMCAVE_BASE`，抗 ASLR）。 |
 | `ARMCAVE_BASE` | 目标二进制加载基址，默认 `0x100000000`。 |
 | `read<T>(addr)` / `write<T>(addr, value)` | 读写目标进程内存。 |
@@ -63,17 +63,10 @@ void init(void) {
 | `armcave_apple_string_make(text)` | 构造 Apple 24 字节短字符串参数。 |
 | `armcave_apple_string_data(value)` | 读取 Apple 字符串的实际字符地址。 |
 | `armcave_apple_file_manager_get(manager, path)` | 调用 Apple file manager 的资源读取方法。 |
-| `logf(fmt, ...)` | 简单日志输出。 |
+| `logf(fmt, ...)` | 简单日志输出；末尾参数对应格式字符串，例如 `logf("value=%d", value)`。 |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | 基础类型别名。 |
 
-表格中的 `...` 表示可变参数，具体含义取决于 API：
-
-- `hook(addr, handler, ...)` / `pre_hook(addr, handler, ...)`：可选的寄存器名，例如 `x0, x1`；框架会把这些寄存器传给 handler。
-- `target_obj_fn(name, symbol, ...)`：目标函数的参数类型，例如 `char`。
-- `target_call(ret, addr, args, ...)`：目标函数的实际调用参数，例如 `a, b`；`args` 本身是参数类型列表，例如 `(int, int)`。
-- `logf(fmt, ...)`：格式字符串对应的参数，例如 `logf("value=%d", value)`。
-
-`hook` 和 `pre_hook` 后面的寄存器参数可选。传入寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
+传入 hook 寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
 
 `hook` 和 `pre_hook` 都是静态写跳转到 code cave，但控制流不同：
 

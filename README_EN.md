@@ -43,16 +43,16 @@ void init(void) {
 
 | API | Description |
 |---|---|
-| `hook(addr, handler, ...)` | Function replacement hook, jumps from target address to handler. |
-| `pre_hook(addr, handler, ...)` | Pre-hook, calls handler first, then executes the overwritten original instructions and returns to the original function. |
+| `hook(addr, handler, ...)` | Function replacement hook, jumps from target address to handler; optional trailing register names such as `x0, x1` are passed to the handler. |
+| `pre_hook(addr, handler, ...)` | Pre-hook, calls handler first, then executes the overwritten original instructions and returns to the original function; trailing register names such as `x20` are optional. |
 | `inject_asm(addr, "instruction"[, "expected"])` | Assemble and write AArch64 instructions; with `expected`, write only when an equally-sized original instruction sequence matches. |
 | `target_fn(ret, name, args, symbol)` | Declares a function in the target binary by symbol name. |
 | `target_va_fn(ret, name, args, addr)` | Declares a function in the target binary by fixed virtual address, generates relative `BL/B` relocation after patching. |
 | `target_obj(name, symbol[, type])` | Declares a target object by symbol name; with `type`, declares a strongly-typed object. |
-| `target_obj_fn(name, symbol, ...)` | Declares a target object function by symbol name. |
+| `target_obj_fn(name, symbol, ...)` | Declares a target object function by symbol name; trailing arguments are the function parameter types, such as `char`. |
 | `target_obj_call(fn, obj, ...)` | Calls a target object function. |
 | `target_addr(va)` | Converts VMA to runtime address (ADRP+PAGEOFF12, ASLR-resistant) for data address references. |
-| `target_call(ret, addr, args, ...)` | Quickly calls a target internal function by virtual address (BR26 PC-relative BL, ASLR-resistant). |
+| `target_call(ret, addr, args, ...)` | Quickly calls a target internal function by virtual address (BR26 PC-relative BL, ASLR-resistant); trailing arguments are call values such as `a, b`, while `args` is the parameter type list, such as `(int, int)`. |
 | `target_call_offset(ret, offset, args, ...)` | Calls a target internal function by file offset (auto-adds `ARMCAVE_BASE`, ASLR-resistant). |
 | `ARMCAVE_BASE` | Target binary load address, defaults to `0x100000000`. |
 | `read<T>(addr)` / `write<T>(addr, value)` | Read/write target process memory. |
@@ -63,17 +63,10 @@ void init(void) {
 | `armcave_apple_string_make(text)` | Build an Apple 24-byte short-string argument. |
 | `armcave_apple_string_data(value)` | Get the actual character address from an Apple string. |
 | `armcave_apple_file_manager_get(manager, path)` | Call the Apple file manager resource-reading method. |
-| `logf(fmt, ...)` | Simple logging output. |
+| `logf(fmt, ...)` | Simple logging output; trailing arguments correspond to the format string, such as `logf("value=%d", value)`. |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | Basic type aliases. |
 
-In the table, `...` denotes variadic arguments whose meaning depends on the API:
-
-- `hook(addr, handler, ...)` / `pre_hook(addr, handler, ...)`: optional register names such as `x0, x1`; the framework passes these registers to the handler.
-- `target_obj_fn(name, symbol, ...)`: parameter types of the target function, such as `char`.
-- `target_call(ret, addr, args, ...)`: actual arguments for the target call, such as `a, b`; `args` itself is the parameter type list, such as `(int, int)`.
-- `logf(fmt, ...)`: arguments corresponding to the format string, such as `logf("value=%d", value)`.
-
-The register parameters after `hook` and `pre_hook` are optional. When registers are provided, the framework generates a wrapper that moves those registers to the standard AArch64 calling convention argument registers.
+When hook registers are provided, the framework generates a wrapper that moves them to the standard AArch64 calling convention argument registers.
 
 Both `hook` and `pre_hook` statically write jumps to a code cave, but differ in control flow:
 
