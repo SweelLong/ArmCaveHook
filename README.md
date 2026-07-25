@@ -53,8 +53,6 @@ void init(void) {
 | `target_obj_call(fn, obj, ...)` | 调用目标对象函数。 |
 | `target_addr(va)` | 将 VMA 转为运行时地址（ADRP+PAGEOFF12，抗 ASLR），用于数据地址引用。 |
 | `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数（BR26 PC-relative BL，抗 ASLR）；末尾参数是实际调用参数，例如 `a, b`，`args` 是参数类型列表，例如 `(int, int)`。 |
-| `target_call_offset(ret, offset, args, ...)` | 按文件偏移调用目标内部函数（自动加 `ARMCAVE_BASE`，抗 ASLR）。 |
-| `ARMCAVE_BASE` | 目标二进制加载基址，默认 `0x100000000`。 |
 | `read<T>(addr)` / `write<T>(addr, value)` | 读写目标进程内存。 |
 | `vcall(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
 | `object_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
@@ -121,8 +119,6 @@ static int call_internal(int a, int b) {
 }
 ```
 
-`ARMCAVE_BASE` 默认为 `0x100000000`（标准 arm64 Mach-O），可在插件中 `#define ARMCAVE_BASE` 覆盖。`target_call` 和 `target_call_offset` 的使用见下文。
-
 访问固定数据地址（全局变量、typeinfo 等）用 `target_addr`。它生成 ADRP+PAGEOFF12 relocation，patch 阶段解析为绝对 VMA，运行时 PC-relative 访问，天然抗 ASLR：
 
 ```cpp
@@ -133,15 +129,13 @@ static AutoplayState *state() {
 }
 ```
 
-`target_call` 和 `target_call_offset` 现在也走 BR26 PC-relative BL，不再通过函数指针间接调用，同样抗 ASLR：
+`target_call` 也走 BR26 PC-relative BL，不再通过函数指针间接调用，同样抗 ASLR：
 
 ```cpp
 static int call_internal(int a, int b) {
     return target_call(int, 0x100012340, (int, int), a, b);
 }
 
-// 文件偏移方式，框架自动加 ARMCAVE_BASE
-target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
 ```
 
 ## C++ 使用范围

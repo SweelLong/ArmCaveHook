@@ -18,5 +18,4 @@ resolve_plugin_relocs(
     const std::map<std::string, int> &offsets,
     const std::filesystem::path &binary_path,
     uint64_t text_va,
-    uint64_t data_va,
-    uint64_t armcave_base);
+    uint64_t data_va);

@@ -36,7 +36,6 @@ struct PluginBlob {
     std::vector<std::string> register_args;
     int entry_offset = 0;
     std::string default_segment;
-    uint64_t armcave_base = 0x100000000ULL;
 
     int total_bytes() const;
     PluginBlob for_action(const HookAction &action) const;

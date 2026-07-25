@@ -40,11 +40,6 @@ static int resolve_armcave_data(const std::string &symbol_name) {
     return resolve_marker(symbol_name, "armcave_data_");
 }
 
-static int resolve_armcave_tco(const std::string &symbol_name, uint64_t base) {
-    int val = resolve_marker(symbol_name, "armcave_tco_");
-    return val ? (int)(val + base) : 0;
-}
-
 static int resolve_via_symbol_table(BinaryImage *binary, const std::string &symbol_name) {
     if (binary->is_elf()) {
         for (const auto &candidate : names(symbol_name)) {
@@ -193,8 +188,7 @@ resolve_plugin_relocs(
     const std::map<std::string, int> &offsets,
     const std::filesystem::path &binary_path,
     uint64_t text_va,
-    uint64_t data_va,
-    uint64_t armcave_base) {
+    uint64_t data_va) {
 
     auto binary = BinaryImage::parse(binary_path);
     if (!binary)
@@ -214,7 +208,6 @@ resolve_plugin_relocs(
             int dst = 0;
             if (val == 0 && section.empty()) {
                 dst = resolve_armcave_va(name);
-                if (!dst) dst = resolve_armcave_tco(name, armcave_base);
                 if (!dst) dst = resolve_via_symbol_table(binary.get(), name);
             } else {
                 dst = (int)(text_va + val);

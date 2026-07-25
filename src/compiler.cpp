@@ -155,19 +155,6 @@ static std::string init_segment(const std::filesystem::path &path) {
     return {};
 }
 
-static uint64_t init_armcave_base(const std::filesystem::path &path) {
-    std::ifstream f(path);
-    if (!f) return 0x100000000ULL;
-    std::string line;
-    std::regex re(R"(^\s*#\s*define\s+ARMCAVE_BASE\s+(0x[0-9a-fA-F]+|\d+)\s*$)");
-    while (std::getline(f, line)) {
-        std::smatch m;
-        if (std::regex_search(line, m, re))
-            return strtoull(m[1].str().c_str(), nullptr, 0);
-    }
-    return 0x100000000ULL;
-}
-
 static std::map<std::string, int> symbol_offsets(BinaryImage *obj, BinarySection *text_sec) {
     std::map<std::string, int> out;
     uint64_t base = text_sec->virtual_address;
@@ -354,7 +341,6 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
 
     blob.symbol_offsets = symbol_offsets(mo.bin.get(), text_sec);
     blob.default_segment = init_segment(path);
-    blob.armcave_base = init_armcave_base(path);
 
     return blob;
 }
@@ -390,7 +376,7 @@ std::vector<uint8_t> PluginBlob::build(uint64_t text_va, uint64_t data_va,
     }
     auto [new_text, new_extra] = resolve_plugin_relocs(
         text, extra, relocs, section_offsets,
-        *target_binary, text_va, data_va, armcave_base);
+        *target_binary, text_va, data_va);
     std::vector<uint8_t> out = new_text;
     if (!new_extra.empty()) {
         while (out.size() % 16 != 0) out.push_back(0);

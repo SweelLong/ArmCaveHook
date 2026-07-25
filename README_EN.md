@@ -53,8 +53,6 @@ void init(void) {
 | `target_obj_call(fn, obj, ...)` | Calls a target object function. |
 | `target_addr(va)` | Converts VMA to runtime address (ADRP+PAGEOFF12, ASLR-resistant) for data address references. |
 | `target_call(ret, addr, args, ...)` | Quickly calls a target internal function by virtual address (BR26 PC-relative BL, ASLR-resistant); trailing arguments are call values such as `a, b`, while `args` is the parameter type list, such as `(int, int)`. |
-| `target_call_offset(ret, offset, args, ...)` | Calls a target internal function by file offset (auto-adds `ARMCAVE_BASE`, ASLR-resistant). |
-| `ARMCAVE_BASE` | Target binary load address, defaults to `0x100000000`. |
 | `read<T>(addr)` / `write<T>(addr, value)` | Read/write target process memory. |
 | `vcall(obj, offset)` | Reads a function pointer at a given offset from an object's vtable. |
 | `object_typeinfo(obj)` | Reads the typeinfo pointer before the vtable in Itanium C++ ABI. |
@@ -121,8 +119,6 @@ static int call_internal(int a, int b) {
 }
 ```
 
-`ARMCAVE_BASE` defaults to `0x100000000` (standard arm64 Mach-O), and can be overridden with `#define ARMCAVE_BASE` in the plugin. Usage of `target_call` and `target_call_offset` is shown below.
-
 Use `target_addr` to access fixed data addresses (global variables, typeinfo, etc.). It generates an ADRP+PAGEOFF12 relocation, resolved to an absolute VMA during patching, and accessed PC-relatively at runtime, inherently ASLR-resistant:
 
 ```cpp
@@ -133,15 +129,13 @@ static AutoplayState *state() {
 }
 ```
 
-`target_call` and `target_call_offset` now also use BR26 PC-relative BL instead of indirect function pointer calls, also ASLR-resistant:
+`target_call` now also uses BR26 PC-relative BL instead of indirect function pointer calls, also ASLR-resistant:
 
 ```cpp
 static int call_internal(int a, int b) {
     return target_call(int, 0x100012340, (int, int), a, b);
 }
 
-// file offset mode, framework auto-adds ARMCAVE_BASE
-target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
 ```
 
 ## C++ Usage Scope
