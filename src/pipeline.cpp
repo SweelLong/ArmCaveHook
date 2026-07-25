@@ -115,16 +115,6 @@ static std::string make_plugin_seg_name(const std::string &plugin,
 }
 
 static std::vector<uint8_t> patch_payload(const HookAction &action) {
-    if (action.kind == "hex" || action.kind == "bytes") {
-        std::string hex = action.data;
-        std::vector<uint8_t> out;
-        for (size_t i = 0; i + 1 < hex.size(); i += 2) {
-            unsigned int byte;
-            sscanf(hex.c_str() + i, "%2x", &byte);
-            out.push_back((uint8_t)byte);
-        }
-        return out;
-    }
     if (action.kind == "asm") {
         std::string asm_text = action.data;
         std::replace(asm_text.begin(), asm_text.end(), ';', '\n');
@@ -143,26 +133,27 @@ static std::vector<uint8_t> patch_payload(const HookAction &action) {
     throw std::runtime_error("unsupported patch action");
 }
 
-static bool clear_imm12(const std::filesystem::path &output_path,
-                         const HookAction &action) {
-    if (action.address == 0)
-        throw std::runtime_error("clear_imm12 missing address");
-    uint64_t expected = strtoull(action.data.c_str(), nullptr, 0);
+static bool matches_expected(const std::filesystem::path &output_path,
+                             const HookAction &action,
+                             const std::vector<uint8_t> &payload) {
+    auto expected = assemble_aarch64(action.expected);
+    if (expected.size() != payload.size())
+        throw std::runtime_error("expected ASM must cover the same number of bytes as the patch");
     auto &binary = parse_binary(output_path);
     int off = file_offset(binary, action.address);
     auto data = read_file(output_path);
-    if (off + 4 > (int)data.size())
+    if (off < 0 || expected.size() > data.size() - (size_t)off)
         throw std::runtime_error("patch out of range");
-    uint32_t current;
-    memcpy(&current, data.data() + off, 4);
-    if (current != expected) {
-        printf("[clear_imm12:skip] 0x%llx current=0x%08x expected=0x%08llx\n",
-               (unsigned long long)action.address, current, (unsigned long long)expected);
+    if (memcmp(data.data() + off, expected.data(), expected.size()) != 0) {
+        uint32_t current;
+        uint32_t expected_code;
+        memcpy(&current, data.data() + off, 4);
+        memcpy(&expected_code, expected.data(), 4);
+        printf("[asm:skip] 0x%llx current=0x%08x expected=0x%08x (%s)\n",
+               (unsigned long long)action.address, current, expected_code,
+               action.expected.c_str());
         return false;
     }
-    uint32_t patched = expected & ~0x003FFC00;
-    memcpy(data.data() + off, &patched, 4);
-    write_file(output_path, data);
     return true;
 }
 
@@ -223,7 +214,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                 throw std::runtime_error(cp.spec->name + ": " + action.kind + " missing address");
             action.address = addr;
 
-            if (action.kind == "hex" || action.kind == "bytes" || action.kind == "asm" || action.kind == "clear_imm12") {
+            if (action.kind == "asm") {
                 direct.push_back(&action);
             } else if (action.kind == "hook") {
                 cp.has_hooks = true;
@@ -254,13 +245,10 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
 
     // Direct patches
     for (auto *action : direct) {
-        if (action->kind == "clear_imm12") {
-            bool changed = clear_imm12(output_path, *action);
-            printf("[clear_imm12] 0x%llx changed=%d\n",
-                   (unsigned long long)action->address, (int)changed);
+        auto payload = patch_payload(*action);
+        if (action->has_expected && !matches_expected(output_path, *action, payload)) {
             continue;
         }
-        auto payload = patch_payload(*action);
         printf("[%s] 0x%llx size=%zu\n", action->kind.c_str(),
                (unsigned long long)action->address, payload.size());
         patch_bytes_va(output_path, output_path, action->address, payload);

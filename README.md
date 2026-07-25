@@ -45,13 +45,10 @@ void init(void) {
 |---|---|
 | `hook(addr, handler, ...)` | 函数替代 hook，从目标地址跳到 handler。 |
 | `pre_hook(addr, handler, ...)` | 前置 hook，先调用 handler，再执行被覆盖的原指令并回到原函数。 |
-| `inject_asm(addr, "instruction")` | 汇编 AArch64 指令并写入虚拟地址。 |
-| `inject_hex(addr, "hex")` | 写入十六进制机器码。 |
-| `patch_imm12(addr, expected)` | 当前指令等于 `expected` 时清掉 ADD/SUB imm12 位。 |
+| `inject_asm(addr, "instruction"[, "expected"])` | 汇编并写入 AArch64 指令；提供 `expected` 时，仅在等长的原指令序列匹配时写入。 |
 | `target_fn(ret, name, args, symbol)` | 按符号名声明目标二进制里的函数。 |
 | `target_va_fn(ret, name, args, addr)` | 按固定虚拟地址声明目标二进制里的函数，patch 后生成相对 `BL/B` relocation。 |
-| `target_obj(name, symbol)` | 按符号名声明目标二进制里的通用对象。 |
-| `target_obj(type, name, symbol)` | 按符号名声明目标二进制里的强类型对象。 |
+| `target_obj(name, symbol[, type])` | 按符号名声明目标对象；提供 `type` 时声明为强类型对象。 |
 | `target_obj_fn(name, symbol, ...)` | 按符号名声明目标对象函数。 |
 | `target_obj_call(fn, obj, ...)` | 调用目标对象函数。 |
 | `target_addr(va)` | 将 VMA 转为运行时地址（ADRP+PAGEOFF12，抗 ASLR），用于数据地址引用。 |
@@ -61,8 +58,20 @@ void init(void) {
 | `read<T>(addr)` / `write<T>(addr, value)` | 读写目标进程内存。 |
 | `vcall(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
 | `object_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
+| `armcave_itoa(buf, value)` | 将整数写入缓冲区并返回字符数。 |
+| `armcave_json_value(json, key, out, size)` | 从数字 key 的 JSON 对象中读取字符串值。 |
+| `armcave_apple_string_make(text)` | 构造 Apple 24 字节短字符串参数。 |
+| `armcave_apple_string_data(value)` | 读取 Apple 字符串的实际字符地址。 |
+| `armcave_apple_file_manager_get(manager, path)` | 调用 Apple file manager 的资源读取方法。 |
 | `logf(fmt, ...)` | 简单日志输出。 |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | 基础类型别名。 |
+
+表格中的 `...` 表示可变参数，具体含义取决于 API：
+
+- `hook(addr, handler, ...)` / `pre_hook(addr, handler, ...)`：可选的寄存器名，例如 `x0, x1`；框架会把这些寄存器传给 handler。
+- `target_obj_fn(name, symbol, ...)`：目标函数的参数类型，例如 `char`。
+- `target_call(ret, addr, args, ...)`：目标函数的实际调用参数，例如 `a, b`；`args` 本身是参数类型列表，例如 `(int, int)`。
+- `logf(fmt, ...)`：格式字符串对应的参数，例如 `logf("value=%d", value)`。
 
 `hook` 和 `pre_hook` 后面的寄存器参数可选。传入寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
 
@@ -82,12 +91,11 @@ pre_hook: target -> handler -> 原始被覆盖指令 -> target + 4
 
 void init(void) {
     inject_asm(0x100500000, "NOP");
-    inject_asm(0x100500004, "MOV W0, #1; RET");
-    inject_hex(0x100500010, "1f2003d5");
+    inject_asm(0x100500004, "MOV W0, #1; RET", "NOP; NOP");
 }
 ```
 
-`inject_asm` 用来写 AArch64 汇编文本，`inject_hex` 用来写已经确认好的机器码。
+`inject_asm` 用来写 AArch64 汇编文本；需要保护版本差异时，使用带 `expected` 的形式。
 
 默认跳转使用 AArch64 `B` 指令。`B` 是 26-bit 相对跳转，按 4 字节指令对齐计算，范围是当前位置前后 128 MiB。Mach-O hook cave 入口会先执行 `XPACLRI` 再保存 `x29/x30`，用于清理带 PAC 签名位的返回地址，避免 detour hook 在 `RET` 时跳到签名后的非规范地址。框架不会在普通 hook 路径中自动生成 `BR` 远跳；目标超出 `B/BL` 范围时会报错。
 

@@ -12,6 +12,8 @@ struct HookAction {
     std::vector<std::string> register_args;
     int size = 0;
     std::string data;
+    std::string expected;
+    bool has_expected = false;
 };
 
 struct PluginSpec {

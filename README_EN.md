@@ -45,13 +45,10 @@ void init(void) {
 |---|---|
 | `hook(addr, handler, ...)` | Function replacement hook, jumps from target address to handler. |
 | `pre_hook(addr, handler, ...)` | Pre-hook, calls handler first, then executes the overwritten original instructions and returns to the original function. |
-| `inject_asm(addr, "instruction")` | Assembles an AArch64 instruction and writes it to a virtual address. |
-| `inject_hex(addr, "hex")` | Writes hexadecimal machine code. |
-| `patch_imm12(addr, expected)` | Clears the ADD/SUB imm12 bits when the current instruction equals `expected`. |
+| `inject_asm(addr, "instruction"[, "expected"])` | Assemble and write AArch64 instructions; with `expected`, write only when an equally-sized original instruction sequence matches. |
 | `target_fn(ret, name, args, symbol)` | Declares a function in the target binary by symbol name. |
 | `target_va_fn(ret, name, args, addr)` | Declares a function in the target binary by fixed virtual address, generates relative `BL/B` relocation after patching. |
-| `target_obj(name, symbol)` | Declares a generic object in the target binary by symbol name. |
-| `target_obj(type, name, symbol)` | Declares a strongly-typed object in the target binary by symbol name. |
+| `target_obj(name, symbol[, type])` | Declares a target object by symbol name; with `type`, declares a strongly-typed object. |
 | `target_obj_fn(name, symbol, ...)` | Declares a target object function by symbol name. |
 | `target_obj_call(fn, obj, ...)` | Calls a target object function. |
 | `target_addr(va)` | Converts VMA to runtime address (ADRP+PAGEOFF12, ASLR-resistant) for data address references. |
@@ -61,8 +58,20 @@ void init(void) {
 | `read<T>(addr)` / `write<T>(addr, value)` | Read/write target process memory. |
 | `vcall(obj, offset)` | Reads a function pointer at a given offset from an object's vtable. |
 | `object_typeinfo(obj)` | Reads the typeinfo pointer before the vtable in Itanium C++ ABI. |
+| `armcave_itoa(buf, value)` | Write an integer to a buffer and return its character count. |
+| `armcave_json_value(json, key, out, size)` | Read a string value from a JSON object using an integer key. |
+| `armcave_apple_string_make(text)` | Build an Apple 24-byte short-string argument. |
+| `armcave_apple_string_data(value)` | Get the actual character address from an Apple string. |
+| `armcave_apple_file_manager_get(manager, path)` | Call the Apple file manager resource-reading method. |
 | `logf(fmt, ...)` | Simple logging output. |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | Basic type aliases. |
+
+In the table, `...` denotes variadic arguments whose meaning depends on the API:
+
+- `hook(addr, handler, ...)` / `pre_hook(addr, handler, ...)`: optional register names such as `x0, x1`; the framework passes these registers to the handler.
+- `target_obj_fn(name, symbol, ...)`: parameter types of the target function, such as `char`.
+- `target_call(ret, addr, args, ...)`: actual arguments for the target call, such as `a, b`; `args` itself is the parameter type list, such as `(int, int)`.
+- `logf(fmt, ...)`: arguments corresponding to the format string, such as `logf("value=%d", value)`.
 
 The register parameters after `hook` and `pre_hook` are optional. When registers are provided, the framework generates a wrapper that moves those registers to the standard AArch64 calling convention argument registers.
 
@@ -82,12 +91,11 @@ Thus `hook` is suitable for replacing a function or entry point, while `pre_hook
 
 void init(void) {
     inject_asm(0x100500000, "NOP");
-    inject_asm(0x100500004, "MOV W0, #1; RET");
-    inject_hex(0x100500010, "1f2003d5");
+    inject_asm(0x100500004, "MOV W0, #1; RET", "NOP; NOP");
 }
 ```
 
-`inject_asm` writes AArch64 assembly text, `inject_hex` writes pre-verified machine code.
+`inject_asm` writes AArch64 assembly text. Use the form with `expected` when the patch should be guarded against version changes.
 
 Default jumps use the AArch64 `B` instruction. `B` is a 26-bit relative jump, aligned to 4-byte instruction boundaries, with a range of 128 MiB forward and backward from the current position. The Mach-O hook cave entry executes `XPACLRI` before saving `x29/x30` to clear PAC-signed return addresses, preventing detour hooks from jumping to non-canonical signed addresses on `RET`. The framework does not automatically generate `BR` far jumps in normal hook paths; it will report an error if the target is out of `B/BL` range.
 

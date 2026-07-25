@@ -111,6 +111,12 @@ static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
                 else if (k == "handler") act.handler = v;
                 else if (k == "segment") act.segment = v;
                 else if (k == "size") act.size = atoi(v.c_str());
+                else if (k == "expected") {
+                    if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                        v = v.substr(1, v.size() - 2);
+                    act.expected = v;
+                    act.has_expected = true;
+                }
                 else if (k == "data") act.data = v;
                 else if (k == "regs") {
                     size_t rs = 0;
