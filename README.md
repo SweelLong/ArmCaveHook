@@ -58,13 +58,10 @@ void init(void) {
 | `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数（BR26 PC-relative BL，抗 ASLR）。 |
 | `target_call_offset(ret, offset, args, ...)` | 按文件偏移调用目标内部函数（自动加 `ARMCAVE_BASE`，抗 ASLR）。 |
 | `ARMCAVE_BASE` | 目标二进制加载基址，默认 `0x100000000`。 |
-| `vt_call(obj, idx, arg)` | 调用对象虚表第 `idx` 项，返回 `string`（ARM64 sret x8 自动处理）。 |
 | `read<T>(addr)` / `write<T>(addr, value)` | 读写目标进程内存。 |
 | `vcall(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
 | `object_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
 | `logf(fmt, ...)` | 简单日志输出。 |
-| `string` | 封装目标 libc++ `std::string` 布局（sizeof=24，SSO up to 22 chars），自动适配 Apple libc++ 与 Android NDK libc++，纯自实现 `assign`/`append`。 |
-| `vector<T>` | 动态 C++ 容器，使用目标堆（`malloc`/`free`），支持扩容。 |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | 基础类型别名。 |
 
 `hook` 和 `pre_hook` 后面的寄存器参数可选。传入寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
@@ -104,8 +101,8 @@ target_obj_fn(cout_put, "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE3putEc"
 target_obj_fn(cout_flush, "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE5flushEv");
 
 extern "C" int hook_func(int a, int b) {
-    string out = "hook ！！\n";
-    for (u64 i = 0; i < out.size(); ++i) {
+    const char *out = "hook ！！\n";
+    for (u64 i = 0; out[i]; ++i) {
         target_obj_call(cout_put, cout_obj, out[i]);
     }
     target_obj_call(cout_flush, cout_obj);
@@ -124,33 +121,6 @@ static int call_internal(int a, int b) {
 ```
 
 `ARMCAVE_BASE` 默认为 `0x100000000`（标准 arm64 Mach-O），可在插件中 `#define ARMCAVE_BASE` 覆盖。`target_call` 和 `target_call_offset` 的使用见下文。
-
-## 虚表调用
-
-通过对象的虚表指针可以调用游戏内部方法。`vt_call` 封装了 ARM64 sret（x8）调用约定，直接返回 `string`：
-
-```cpp
-string content = vt_call(file_manager, 5, path_string);
-const char *data = content.c_str();  // SSO/long 模式自动处理
-```
-
-需要先调用目标内部函数再拿对象做虚表调用时，也优先把目标函数声明成 `target_va_fn`。这样插件代码不需要 `_dyld_get_image_header(0)`、`dladdr` 或平台私有 loader API 来计算模块基址；地址解析交给 patch 阶段处理，插件源码更容易跨 Mach-O/ELF 等格式复用。访问固定数据地址时使用 `target_addr`：
-
-```cpp
-#include "armcave.h"
-#define SEGMENT_NAME arcrating
-
-target_va_fn(void *, get_file_manager, (void), 0x100DC491C);
-
-static void read_ratinglist() {
-    void *fm = get_file_manager();
-    if (!fm)
-        return;
-
-    string po = vt_call(fm, 5, path_string);
-    // 解析 po 内容...
-}
-```
 
 访问固定数据地址（全局变量、typeinfo 等）用 `target_addr`。它生成 ADRP+PAGEOFF12 relocation，patch 阶段解析为绝对 VMA，运行时 PC-relative 访问，天然抗 ASLR：
 
@@ -175,7 +145,7 @@ target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
 
 ## C++ 使用范围
 
-插件按 C++17 编译，并关闭异常、RTTI 和线程安全静态初始化。推荐使用简单类型、普通函数及框架内置的 `vector<T>` 和 `string`（使用目标堆/malloc，无需额外配置）。避免依赖异常、完整 libc++ 容器和复杂全局构造。
+插件按 C++17 编译，并关闭异常、RTTI 和线程安全静态初始化。推荐使用简单类型和普通函数。避免依赖异常、完整 libc++ 容器和复杂全局构造。
 
 ## 构建配置
 
@@ -216,7 +186,7 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passi
 ```text
 input = binaries/bin
 output = binaries/bin.patched
-# plugin_whitelist = arc_rating.cpp, arc_autoplay.cpp
+# plugin_whitelist = arc_autoplay.cpp
 # plugin_blacklist = arc_test.cpp
 ```
 
@@ -226,14 +196,6 @@ output = binaries/bin.patched
 ./build.sh --input binaries/libcocos2dcpp.so \
   --output binaries/libcocos2dcpp.patched.so \
   --plugin-whitelist arc_rating_so.cpp
-```
-
-目标使用其他分配器时，可在插件包含 `armcave.h` 前配置导出符号：
-
-```cpp
-#define ARMCAVE_MALLOC_SYMBOL "je_malloc"
-#define ARMCAVE_FREE_SYMBOL "je_free"
-#include "armcave.h"
 ```
 
 然后用对应平台的构建脚本：
@@ -250,15 +212,10 @@ output = binaries/bin.patched
 - [x] 支持 iOS AArch64 Mach-O 插件注入。
 - [x] 支持 Android AArch64 ELF 插件注入。
 - [ ] 替换自研二进制解析器：评估并迁移至 LIEF 或 LLVM 后端，增强对加壳、SHT 压缩和异常段结构的兼容性，避免解析失败直接中止。
-- [x] 设计可配置内存分配器接口：通过动态符号 / PLT 解析堆函数，并允许插件配置 tcmalloc、jemalloc 等替代实现的导出符号。
-- [ ] 重构 `string` / `vector` ABI 适配：在 Apple libc++、Android NDK libc++ 之外增加 GNU libstdc++、MSVC 等布局的编译期配置或自动选择。
-- [x] 为容器操作添加显式错误处理：在 `-fno-exceptions` / `-fno-rtti` 环境下，为扩容、追加、容量溢出和分配失败提供 `trap` 保护。
 - [ ] 实现远跳转 trampoline：当 AArch64 `B/BL` 超出正负 128 MiB 范围时，自动生成间接绝对跳转序列。
 - [x] 解决多插件符号冲突：插件独立编译、使用独立段名和符号映射，支持不同插件声明同名 `replacement` / `init` 函数。
 - [x] 增强跨平台构建脚本：检测 CMake、Clang/LLVM 和 MSVC 环境，并允许命令行参数或环境变量覆盖 `armcave.conf`，便于 CI/CD 和批量处理。
 - [ ] 补充性能基准测试：测量 Hook 前后延迟，并与 Frida Stalker、Dobby、E9Patch 等工具进行可复现的横向对比。
-- [ ] 提升论文的学术贡献层次：补充静态重写、C++ 语义抽取与自动化修补的形式化描述，以及重定位和 PAC 处理的正确性分析。
-- [ ] 使用至少三款真实 arm64 大型应用进行压力测试，记录并修复符号、跳转和重定位失败，目标成功率不低于 90%。
 - [ ] 增强错误日志与诊断信息：输出结构化失败原因、地址、重定位类型和上下文，替代笼统的 `SKIP` / `errors` 提示。
 - [ ] 消除固定 VMA 的版本绑定：组合动态符号、PLT/GOT、字节签名、调用图锚点和用户规则，升级目标二进制后优先自动重定位。
 - [ ] 改善隐藏或移除符号的定位：在没有符号元数据时使用稳定代码签名和用户规则，减少对 `target_va_fn` / `target_addr` 固定地址配置的依赖。

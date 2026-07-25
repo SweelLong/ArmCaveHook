@@ -58,13 +58,10 @@ void init(void) {
 | `target_call(ret, addr, args, ...)` | Quickly calls a target internal function by virtual address (BR26 PC-relative BL, ASLR-resistant). |
 | `target_call_offset(ret, offset, args, ...)` | Calls a target internal function by file offset (auto-adds `ARMCAVE_BASE`, ASLR-resistant). |
 | `ARMCAVE_BASE` | Target binary load address, defaults to `0x100000000`. |
-| `vt_call(obj, idx, arg)` | Calls the `idx`-th entry in an object's vtable, returns `string` (ARM64 sret x8 handled automatically). |
 | `read<T>(addr)` / `write<T>(addr, value)` | Read/write target process memory. |
 | `vcall(obj, offset)` | Reads a function pointer at a given offset from an object's vtable. |
 | `object_typeinfo(obj)` | Reads the typeinfo pointer before the vtable in Itanium C++ ABI. |
 | `logf(fmt, ...)` | Simple logging output. |
-| `string` | Wraps the target libc++ `std::string` layout (sizeof=24, SSO up to 22 chars), automatically selecting Apple or Android NDK libc++ layout with self-implemented `assign`/`append`. |
-| `vector<T>` | Dynamic C++ container using target heap (`malloc`/`free`), supports resizing. |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | Basic type aliases. |
 
 The register parameters after `hook` and `pre_hook` are optional. When registers are provided, the framework generates a wrapper that moves those registers to the standard AArch64 calling convention argument registers.
@@ -104,8 +101,8 @@ target_obj_fn(cout_put, "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE3putEc"
 target_obj_fn(cout_flush, "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE5flushEv");
 
 extern "C" int hook_func(int a, int b) {
-    string out = "hook ！！\n";
-    for (u64 i = 0; i < out.size(); ++i) {
+    const char *out = "hook ！！\n";
+    for (u64 i = 0; out[i]; ++i) {
         target_obj_call(cout_put, cout_obj, out[i]);
     }
     target_obj_call(cout_flush, cout_obj);
@@ -124,33 +121,6 @@ static int call_internal(int a, int b) {
 ```
 
 `ARMCAVE_BASE` defaults to `0x100000000` (standard arm64 Mach-O), and can be overridden with `#define ARMCAVE_BASE` in the plugin. Usage of `target_call` and `target_call_offset` is shown below.
-
-## Vtable Calls
-
-Game internal methods can be called via an object's vtable pointer. `vt_call` wraps the ARM64 sret (x8) calling convention and directly returns `string`:
-
-```cpp
-string content = vt_call(file_manager, 5, path_string);
-const char *data = content.c_str();  // SSO/long mode handled automatically
-```
-
-When you need to call a target internal function first and then use the object for a vtable call, prefer declaring the target function as `target_va_fn`. This way the plugin code doesn't need `_dyld_get_image_header(0)`, `dladdr`, or platform-private loader APIs to calculate the module base; address resolution is handled during patching, making plugin source easier to reuse across Mach-O, ELF, and other formats. Use `target_addr` to access fixed data addresses:
-
-```cpp
-#include "armcave.h"
-#define SEGMENT_NAME arcrating
-
-target_va_fn(void *, get_file_manager, (void), 0x100DC491C);
-
-static void read_ratinglist() {
-    void *fm = get_file_manager();
-    if (!fm)
-        return;
-
-    string po = vt_call(fm, 5, path_string);
-    // parse po content...
-}
-```
 
 Use `target_addr` to access fixed data addresses (global variables, typeinfo, etc.). It generates an ADRP+PAGEOFF12 relocation, resolved to an absolute VMA during patching, and accessed PC-relatively at runtime, inherently ASLR-resistant:
 
@@ -175,7 +145,7 @@ target_call_offset(void *, 0xd4785c, (void *, const char *), buf, path);
 
 ## C++ Usage Scope
 
-Plugins are compiled as C++17 with exceptions, RTTI, and thread-safe static initialization disabled. Simple types, plain functions, and the built-in `vector<T>` and `string` (using target heap/malloc, no extra configuration needed) are recommended. Avoid depending on exceptions, full libc++ containers, and complex global constructors.
+Plugins are compiled as C++17 with exceptions, RTTI, and thread-safe static initialization disabled. Simple types and plain functions are recommended. Avoid depending on exceptions, full libc++ containers, and complex global constructors.
 
 ## Build Configuration
 
@@ -216,7 +186,7 @@ Edit `armcave.conf` in the project root:
 ```text
 input = binaries/bin
 output = binaries/bin.patched
-# plugin_whitelist = arc_rating.cpp, arc_autoplay.cpp
+# plugin_whitelist = arc_autoplay.cpp
 # plugin_blacklist = arc_test.cpp
 ```
 
@@ -226,14 +196,6 @@ Arguments may also be supplied directly. Command-line options override `ARMCAVE_
 ./build.sh --input binaries/libcocos2dcpp.so \
   --output binaries/libcocos2dcpp.patched.so \
   --plugin-whitelist arc_rating_so.cpp
-```
-
-For a target using another allocator, configure its exported symbols before including `armcave.h`:
-
-```cpp
-#define ARMCAVE_MALLOC_SYMBOL "je_malloc"
-#define ARMCAVE_FREE_SYMBOL "je_free"
-#include "armcave.h"
 ```
 
 Then use the build script for your platform:
@@ -250,15 +212,10 @@ The scripts configure and build `build/armcave` automatically.
 - [x] Support iOS AArch64 Mach-O plugin injection.
 - [x] Support Android AArch64 ELF plugin injection.
 - [ ] Replace the in-house binary parser: evaluate and migrate to a LIEF or LLVM backend for packed binaries, compressed SHT data, and unusual segment layouts without aborting on parser failures.
-- [x] Design a configurable allocator interface: resolve heap functions through dynamic symbols / PLT entries and allow plugins to select exported tcmalloc or jemalloc symbols.
-- [ ] Generalize `string` / `vector` ABI support: add compile-time configuration or automatic selection for GNU libstdc++ and MSVC in addition to Apple and Android NDK libc++.
-- [x] Add explicit container error handling with `trap` guards for growth, append, capacity overflow, and allocation failure under `-fno-exceptions` / `-fno-rtti`.
 - [ ] Implement far-jump trampolines: emit an indirect absolute jump when an AArch64 `B/BL` target is outside the plus or minus 128 MiB range.
 - [x] Isolate symbols across plugins: plugins are compiled independently and use separate segment names and symbol maps, allowing duplicate `replacement` / `init` names.
 - [x] Harden cross-platform build scripts: detect CMake, Clang/LLVM, and MSVC, and allow command-line arguments or environment variables to override `armcave.conf` for CI/CD and batch use.
 - [ ] Add reproducible performance benchmarks for Hook overhead and comparisons with Frida Stalker, Dobby, and E9Patch.
-- [ ] Strengthen the academic contribution with a formal account of static rewriting, C++ semantic extraction, automated patching, relocation correctness, and PAC handling.
-- [ ] Stress-test at least three real-world large arm64 applications, track symbol/jump/relocation failures, and target a success rate of at least 90%.
 - [ ] Improve diagnostics with structured failure reasons, addresses, relocation types, and context instead of generic `SKIP` / `errors` messages.
 - [ ] Remove fixed-VMA version coupling using dynamic symbols, PLT/GOT, byte signatures, call-graph anchors, and user rules to relocate automatically after target upgrades.
 - [ ] Improve location of hidden or removed symbols with stable code signatures and user rules, reducing reliance on fixed `target_va_fn` / `target_addr` configuration.
