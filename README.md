@@ -1,14 +1,18 @@
 # ArmCaveHook
 
-中文 | [English](README_EN.md)
-
 <p align="center">
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
-  <img src="https://img.shields.io/badge/Apple-iOS%20Mach--O-lightgrey?logo=apple" alt="Apple">
+  <img src="https://img.shields.io/badge/Apple-Apple%20Mach--O-lightgrey?logo=apple" alt="Apple">
   <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
   <img src="https://img.shields.io/badge/Language-C%2B%2B17-blue?logo=cplusplus" alt="C++17">
-  <img src="https://img.shields.io/badge/Binary-Built--in-orange" alt="Built-in binary support">
+  <img src="https://img.shields.io/badge/CMake-3.24+-blue?logo=cmake" alt="CMake">
+  <img src="https://img.shields.io/badge/License-MIT-yellow?logo=opensourceinitiative" alt="License">
+  <img src="https://img.shields.io/github/last-commit/SweelLong/ArmCaveHook?logo=git" alt="Last Commit">
+  <img src="https://img.shields.io/github/repo-size/SweelLong/ArmCaveHook?logo=hackthebox" alt="Repo Size">
+  <img src="https://img.shields.io/badge/Docs-English%20%7C%20中文-brightgreen?logo=readthedocs" alt="Docs">
 </p>
+
+中文 | [English](README_EN.md)
 
 ArmCaveHook 是一个 AArch64 静态 hook 框架。插件使用 `.cpp` 编写，框架把插件编译成 cave 代码段，再按插件入口声明修改目标二进制。
 
@@ -134,6 +138,28 @@ static AutoplayState *state() {
 
 命令行工具使用 C++17 和 CMake 3.24+ 构建，Mach-O/ELF 的解析与写回能力已内置，不需要下载或安装第三方二进制库。所有平台只需要 CMake、一个 C++17 编译器和 LLVM/Clang；Clang 负责把 `.cpp` 插件和注入汇编编译成 AArch64 中间对象。
 
+编辑项目根目录的 `armcave.conf`：
+
+```text
+input = binaries/bin
+output = binaries/bin.patched
+plugins = plugins
+build_dir = build
+# plugin_whitelist = arc_autoplay.cpp
+# plugin_blacklist = arc_test.cpp
+```
+
+构建脚本只读取项目根目录的 `armcave.conf`，不接受命令行参数或环境变量覆盖。`input`、`output`、`plugins` 和 `build_dir` 为必填项；插件白名单和黑名单可以省略。
+
+然后用对应平台的构建脚本：
+
+| 文件 | 平台 |
+|---|---|
+| `build.sh` | Linux / macOS |
+| `build.bat` | Windows |
+
+脚本会根据 `build_dir` 自动配置并编译 `armcave`，然后按同一份配置执行 patch。
+
 ### macOS
 
 确认系统已有 `clang` 和 `clang++`，然后安装 CMake：
@@ -164,40 +190,14 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passi
 .\build.bat
 ```
 
-编辑项目根目录的 `armcave.conf`：
-
-```text
-input = binaries/bin
-output = binaries/bin.patched
-# plugin_whitelist = arc_autoplay.cpp
-# plugin_blacklist = arc_test.cpp
-```
-
-也可以直接传入参数；命令行参数优先于 `ARMCAVE_*` 环境变量，环境变量优先于 `armcave.conf`：
-
-```bash
-./build.sh --input binaries/libcocos2dcpp.so \
-  --output binaries/libcocos2dcpp.patched.so \
-  --plugin-whitelist arc_rating_so.cpp
-```
-
-然后用对应平台的构建脚本：
-
-| 文件 | 平台 |
-|---|---|
-| `build.sh` | Linux / macOS |
-| `build.bat` | Windows |
-
-脚本会自动配置并编译 `build/armcave`。
-
 ## TODO
 
-- [x] 支持 iOS AArch64 Mach-O 插件注入。
+- [x] 支持 Apple AArch64 Mach-O 插件注入。
 - [x] 支持 Android AArch64 ELF 插件注入。
 - [ ] 替换自研二进制解析器：评估并迁移至 LIEF 或 LLVM 后端，增强对加壳、SHT 压缩和异常段结构的兼容性，避免解析失败直接中止。
 - [ ] 实现远跳转 trampoline：当 AArch64 `B/BL` 超出正负 128 MiB 范围时，自动生成间接绝对跳转序列。
 - [x] 解决多插件符号冲突：插件独立编译、使用独立段名和符号映射，支持不同插件声明同名 `replacement` / `init` 函数。
-- [x] 增强跨平台构建脚本：检测 CMake、Clang/LLVM 和 MSVC 环境，并允许命令行参数或环境变量覆盖 `armcave.conf`，便于 CI/CD 和批量处理。
+- [x] 增强跨平台构建脚本：检测 CMake、Clang/LLVM 和 MSVC 环境，并统一从 `armcave.conf` 读取构建与 patch 配置。
 - [ ] 补充性能基准测试：测量 Hook 前后延迟，并与 Frida Stalker、Dobby、E9Patch 等工具进行可复现的横向对比。
 - [ ] 增强错误日志与诊断信息：输出结构化失败原因、地址、重定位类型和上下文，替代笼统的 `SKIP` / `errors` 提示。
 - [ ] 消除固定 VMA 的版本绑定：组合动态符号、PLT/GOT、字节签名、调用图锚点和用户规则，升级目标二进制后优先自动重定位。

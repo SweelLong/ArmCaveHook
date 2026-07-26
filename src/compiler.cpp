@@ -58,7 +58,7 @@ static std::string shell_quote(const std::string &value) {
 }
 
 static std::string clang_driver(bool cxx) {
-    return cxx ? ARMCAVE_CLANGXX_PATH : ARMCAVE_CLANG_PATH;
+    return cxx ? "clang++" : "clang";
 }
 
 static std::string quiet_redirect() {

@@ -4,22 +4,6 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
-usage() {
-    cat <<'EOF'
-Usage: ./build.sh [options]
-  --input <path>                 Input Mach-O or ELF
-  --output <path>                Patched output (default: <input>.patched)
-  --plugins <dir>                Plugin directory (default: plugins)
-  --plugin-whitelist <names>     Comma-separated plugin names
-  --plugin-blacklist <names>     Comma-separated plugin names
-  --build-dir <dir>              CMake build directory (default: build)
-  -h, --help                     Show this help
-
-Options override ARMCAVE_INPUT/OUTPUT/PLUGINS/PLUGIN_WHITELIST/
-PLUGIN_BLACKLIST/BUILD_DIR, which override armcave.conf.
-EOF
-}
-
 fail() {
     echo "Error: $*" >&2
     exit 1
@@ -31,39 +15,25 @@ need_tool() {
 
 conf_value() {
     key=$1
-    [ -f "$CONF" ] || return 0
     sed -n "s/^${key}[[:space:]]*=[[:space:]]*//p" "$CONF" | tail -n 1
 }
 
-CONF=${ARMCAVE_CONF:-armcave.conf}
-input=${ARMCAVE_INPUT:-}
-output=${ARMCAVE_OUTPUT:-}
-plugins=${ARMCAVE_PLUGINS:-}
-wl=${ARMCAVE_PLUGIN_WHITELIST:-}
-bl=${ARMCAVE_PLUGIN_BLACKLIST:-}
-build_dir=${BUILD_DIR:-build}
+[ "$#" -eq 0 ] || fail "build.sh does not accept arguments; edit armcave.conf"
 
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --input) [ "$#" -ge 2 ] || fail "$1 requires a value"; input=$2; shift 2 ;;
-        --output) [ "$#" -ge 2 ] || fail "$1 requires a value"; output=$2; shift 2 ;;
-        --plugins) [ "$#" -ge 2 ] || fail "$1 requires a value"; plugins=$2; shift 2 ;;
-        --plugin-whitelist) [ "$#" -ge 2 ] || fail "$1 requires a value"; wl=$2; shift 2 ;;
-        --plugin-blacklist) [ "$#" -ge 2 ] || fail "$1 requires a value"; bl=$2; shift 2 ;;
-        --build-dir) [ "$#" -ge 2 ] || fail "$1 requires a value"; build_dir=$2; shift 2 ;;
-        -h|--help) usage; exit 0 ;;
-        *) fail "unknown option: $1" ;;
-    esac
-done
+CONF=armcave.conf
+[ -f "$CONF" ] || fail "$CONF was not found"
 
-[ -n "$input" ] || input=$(conf_value input)
-[ -n "$output" ] || output=$(conf_value output)
-[ -n "$plugins" ] || plugins=$(conf_value plugins)
-[ -n "$wl" ] || wl=$(conf_value plugin_whitelist)
-[ -n "$bl" ] || bl=$(conf_value plugin_blacklist)
-: "${plugins:=plugins}"
-[ -n "$input" ] || fail "input is not set; use --input, ARMCAVE_INPUT, or $CONF"
-: "${output:=${input}.patched}"
+input=$(conf_value input)
+output=$(conf_value output)
+plugins=$(conf_value plugins)
+wl=$(conf_value plugin_whitelist)
+bl=$(conf_value plugin_blacklist)
+build_dir=$(conf_value build_dir)
+
+[ -n "$input" ] || fail "input is not set in $CONF"
+[ -n "$output" ] || fail "output is not set in $CONF"
+[ -n "$plugins" ] || fail "plugins is not set in $CONF"
+[ -n "$build_dir" ] || fail "build_dir is not set in $CONF"
 
 need_tool cmake
 need_tool clang

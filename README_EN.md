@@ -1,14 +1,18 @@
 # ArmCaveHook
 
-[中文](README.md) | English
-
 <p align="center">
   <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
-  <img src="https://img.shields.io/badge/Apple-iOS%20Mach--O-lightgrey?logo=apple" alt="Apple">
+  <img src="https://img.shields.io/badge/Apple-Apple%20Mach--O-lightgrey?logo=apple" alt="Apple">
   <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
   <img src="https://img.shields.io/badge/Language-C%2B%2B17-blue?logo=cplusplus" alt="C++17">
-  <img src="https://img.shields.io/badge/Binary-Built--in-orange" alt="Built-in binary support">
+  <img src="https://img.shields.io/badge/CMake-3.24+-blue?logo=cmake" alt="CMake">
+  <img src="https://img.shields.io/badge/License-MIT-yellow?logo=opensourceinitiative" alt="License">
+  <img src="https://img.shields.io/github/last-commit/SweelLong/ArmCaveHook?logo=git" alt="Last Commit">
+  <img src="https://img.shields.io/github/repo-size/SweelLong/ArmCaveHook?logo=hackthebox" alt="Repo Size">
+  <img src="https://img.shields.io/badge/Docs-English%20%7C%20中文-brightgreen?logo=readthedocs" alt="Docs">
 </p>
+
+[中文](README.md) | English
 
 ArmCaveHook is an AArch64 static hooking framework. Plugins are written in `.cpp`, and the framework compiles them into code cave sections, then patches the target binary according to the plugin's entry declarations.
 
@@ -134,6 +138,28 @@ Plugins are compiled as C++17 with exceptions, RTTI, and thread-safe static init
 
 The command-line tool is built with C++17 and CMake 3.24+. Mach-O/ELF parsing and rewriting are built in, so no third-party binary library is downloaded or installed. Every host only needs CMake, a C++17 compiler, and LLVM/Clang. Clang compiles `.cpp` plugins and assembles AArch64 instructions into the intermediate objects consumed by the patcher.
 
+Edit `armcave.conf` in the project root:
+
+```text
+input = binaries/bin
+output = binaries/bin.patched
+plugins = plugins
+build_dir = build
+# plugin_whitelist = arc_autoplay.cpp
+# plugin_blacklist = arc_test.cpp
+```
+
+The build scripts read only `armcave.conf` from the project root. They do not accept command-line arguments or environment-variable overrides. `input`, `output`, `plugins`, and `build_dir` are required; the plugin whitelist and blacklist may be omitted.
+
+Then use the build script for your platform:
+
+| File | Platform |
+|---|---|
+| `build.sh` | Linux / macOS |
+| `build.bat` | Windows |
+
+The scripts configure and build `armcave` under `build_dir`, then run the patch using the same configuration.
+
 ### macOS
 
 Confirm that `clang` and `clang++` are available, then install CMake:
@@ -164,40 +190,14 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passi
 .\build.bat
 ```
 
-Edit `armcave.conf` in the project root:
-
-```text
-input = binaries/bin
-output = binaries/bin.patched
-# plugin_whitelist = arc_autoplay.cpp
-# plugin_blacklist = arc_test.cpp
-```
-
-Arguments may also be supplied directly. Command-line options override `ARMCAVE_*` environment variables, which override `armcave.conf`:
-
-```bash
-./build.sh --input binaries/libcocos2dcpp.so \
-  --output binaries/libcocos2dcpp.patched.so \
-  --plugin-whitelist arc_rating_so.cpp
-```
-
-Then use the build script for your platform:
-
-| File | Platform |
-|---|---|
-| `build.sh` | Linux / macOS |
-| `build.bat` | Windows |
-
-The scripts configure and build `build/armcave` automatically.
-
 ## TODO
 
-- [x] Support iOS AArch64 Mach-O plugin injection.
+- [x] Support Apple AArch64 Mach-O plugin injection.
 - [x] Support Android AArch64 ELF plugin injection.
 - [ ] Replace the in-house binary parser: evaluate and migrate to a LIEF or LLVM backend for packed binaries, compressed SHT data, and unusual segment layouts without aborting on parser failures.
 - [ ] Implement far-jump trampolines: emit an indirect absolute jump when an AArch64 `B/BL` target is outside the plus or minus 128 MiB range.
 - [x] Isolate symbols across plugins: plugins are compiled independently and use separate segment names and symbol maps, allowing duplicate `replacement` / `init` names.
-- [x] Harden cross-platform build scripts: detect CMake, Clang/LLVM, and MSVC, and allow command-line arguments or environment variables to override `armcave.conf` for CI/CD and batch use.
+- [x] Harden cross-platform build scripts: detect CMake, Clang/LLVM, and MSVC, and consistently read build and patch settings from `armcave.conf`.
 - [ ] Add reproducible performance benchmarks for Hook overhead and comparisons with Frida Stalker, Dobby, and E9Patch.
 - [ ] Improve diagnostics with structured failure reasons, addresses, relocation types, and context instead of generic `SKIP` / `errors` messages.
 - [ ] Remove fixed-VMA version coupling using dynamic symbols, PLT/GOT, byte signatures, call-graph anchors, and user rules to relocate automatically after target upgrades.
