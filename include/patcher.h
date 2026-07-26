@@ -13,7 +13,7 @@ int target_insn(uint32_t insn, uint64_t va);
 
 // Build the shared control block used by a hook site. Handler code can live in
 // any plugin segment as long as it is within AArch64 BL range.
-int hook_dispatch_size(int handler_count, int original_size, bool detour,
+int hook_dispatch_size(int handler_count, int original_size, bool override_original,
                        bool strip_pac);
 std::vector<uint8_t> build_hook_dispatch(
     uint64_t cave_va,
@@ -21,7 +21,7 @@ std::vector<uint8_t> build_hook_dispatch(
     int hook_size,
     const std::vector<uint8_t> &original,
     const std::vector<uint64_t> &handler_vas,
-    bool detour,
+    bool override_original,
     bool strip_pac);
 
 int plugin_wrapper_size(const std::vector<std::string> &registers);
@@ -38,7 +38,7 @@ std::vector<uint8_t> build_hook_cave(
     const std::vector<uint8_t> &original,
     const std::vector<PluginBlob *> &plugin_blobs,
     const std::filesystem::path *target_binary,
-    bool detour = false,
+    bool override_original = false,
     bool branch_host = false,
     const std::vector<uint64_t> *nop_addrs = nullptr);
 
@@ -60,5 +60,5 @@ std::pair<uint64_t, uint64_t> patch_hook_macho(
     const std::vector<uint8_t> &original,
     const std::vector<PluginBlob *> &plugin_blobs,
     const std::string &seg_name,
-    bool detour = false, bool branch_host = false,
+    bool override_original = false, bool branch_host = false,
     const std::vector<uint64_t> *nop_addrs = nullptr);

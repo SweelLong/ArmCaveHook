@@ -115,13 +115,13 @@ static std::string make_plugin_seg_name(const std::string &plugin,
 }
 
 static std::vector<uint8_t> patch_payload(const HookAction &action) {
-    if (action.kind == "asm") {
+    if (action.kind == "patch_asm") {
         std::string asm_text = action.data;
         std::replace(asm_text.begin(), asm_text.end(), ';', '\n');
         auto payload = assemble_aarch64(asm_text);
         if (action.size) {
             if (action.size % (int)payload.size() != 0)
-                throw std::runtime_error("ASM size must be a multiple of assembled payload size");
+                throw std::runtime_error("patch_asm size must be a multiple of assembled payload size");
             int repeat = action.size / (int)payload.size();
             std::vector<uint8_t> out;
             for (int i = 0; i < repeat; i++)
@@ -194,7 +194,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
 
     struct HookSite {
         uint64_t va = 0;
-        bool is_pre_hook = false;
+        bool overrides_original = false;
         std::vector<std::pair<Compiled *, HookAction *>> handlers;
         std::vector<uint8_t> original;
         Compiled *owner = nullptr;
@@ -202,8 +202,8 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     };
 
     std::vector<HookAction *> direct;
-    std::map<uint64_t, HookSite> hook_sites;
-    std::map<uint64_t, HookSite> pre_hook_sites;
+    std::map<uint64_t, HookSite> replace_sites;
+    std::map<uint64_t, HookSite> detour_sites;
 
     for (auto &cp : compiled) {
         for (auto &action : cp.blob.declarations) {
@@ -214,28 +214,28 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                 throw std::runtime_error(cp.spec->name + ": " + action.kind + " missing address");
             action.address = addr;
 
-            if (action.kind == "asm") {
+            if (action.kind == "patch_asm") {
                 direct.push_back(&action);
-            } else if (action.kind == "hook") {
+            } else if (action.kind == "hook_replace") {
                 cp.has_hooks = true;
                 if (!action.segment.empty() && action.segment != "auto" && action.segment != "armcave") {
                     if (!cp.requested_segment.empty() && cp.requested_segment != action.segment)
                         throw std::runtime_error(cp.spec->name + ": one plugin cannot request multiple segments");
                     cp.requested_segment = action.segment;
                 }
-                auto &site = hook_sites[addr];
+                auto &site = replace_sites[addr];
                 site.va = addr;
+                site.overrides_original = true;
                 site.handlers.push_back({&cp, &action});
-            } else if (action.kind == "pre_hook") {
+            } else if (action.kind == "hook_detour") {
                 cp.has_hooks = true;
                 if (!action.segment.empty() && action.segment != "auto" && action.segment != "armcave") {
                     if (!cp.requested_segment.empty() && cp.requested_segment != action.segment)
                         throw std::runtime_error(cp.spec->name + ": one plugin cannot request multiple segments");
                     cp.requested_segment = action.segment;
                 }
-                auto &site = pre_hook_sites[addr];
+                auto &site = detour_sites[addr];
                 site.va = addr;
-                site.is_pre_hook = true;
                 site.handlers.push_back({&cp, &action});
             } else {
                 throw std::runtime_error(cp.spec->name + ": unsupported action " + action.kind);
@@ -265,8 +265,8 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
             site.owner = site.handlers.front().first;
         }
     };
-    prepare_sites(pre_hook_sites);
-    prepare_sites(hook_sites);
+    prepare_sites(detour_sites);
+    prepare_sites(replace_sites);
 
     std::set<std::string> used_segments;
     for (auto &cp : compiled) {
@@ -275,13 +275,13 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
             ? cp.blob.default_segment : cp.requested_segment;
         cp.segment_name = make_plugin_seg_name(cp.spec->name, prefix, used_segments);
         for (auto &action : cp.blob.declarations)
-            if (action.kind == "hook" || action.kind == "pre_hook")
+            if (action.kind == "hook_replace" || action.kind == "hook_detour")
                 action.segment = cp.segment_name;
     }
 
     std::map<Compiled *, std::vector<HookSite *>> owned_sites;
-    for (auto &[va, site] : pre_hook_sites) owned_sites[site.owner].push_back(&site);
-    for (auto &[va, site] : hook_sites) owned_sites[site.owner].push_back(&site);
+    for (auto &[va, site] : detour_sites) owned_sites[site.owner].push_back(&site);
+    for (auto &[va, site] : replace_sites) owned_sites[site.owner].push_back(&site);
     std::map<Compiled *, std::map<HookAction *, int>> wrapper_offsets;
 
     for (auto &cp : compiled) {
@@ -291,11 +291,11 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
             cursor = (cursor + 3) & ~3;
             site->control_offset = cursor;
             cursor += hook_dispatch_size((int)site->handlers.size(), 4,
-                                         !site->is_pre_hook,
+                                         site->overrides_original,
                                          target_is_macho);
         }
         for (auto &action : cp.blob.declarations) {
-            if ((action.kind != "hook" && action.kind != "pre_hook") ||
+            if ((action.kind != "hook_replace" && action.kind != "hook_detour") ||
                 action.register_args.empty())
                 continue;
             cursor = (cursor + 3) & ~3;
@@ -363,13 +363,13 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                 handlers.push_back(handler_va(cp, action));
             uint64_t control_va = site.owner->segment_va + site.control_offset;
             auto control = build_hook_dispatch(control_va, va, 4, site.original,
-                                               handlers, !site.is_pre_hook,
+                                               handlers, site.overrides_original,
                                                layout.is_macho());
             place(site.owner->content, site.control_offset, control);
         }
     };
-    build_sites(pre_hook_sites);
-    build_sites(hook_sites);
+    build_sites(detour_sites);
+    build_sites(replace_sites);
 
     for (auto &cp : compiled) {
         if (!cp.has_hooks) continue;
@@ -382,7 +382,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         for (auto &[va, site] : sites) {
             uint64_t control_va = site.owner->segment_va + site.control_offset;
             printf("[%s] 0x%llx segment=%s handlers=%zu\n",
-                   site.is_pre_hook ? "pre_hook" : "hook",
+                   site.overrides_original ? "hook_replace" : "hook_detour",
                    (unsigned long long)va, site.owner->segment_name.c_str(),
                    site.handlers.size());
             patch_hook_window(output_path, output_path, va, 4, control_va);
@@ -390,8 +390,8 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         }
     };
 
-    patch_sites(pre_hook_sites);
-    patch_sites(hook_sites);
+    patch_sites(detour_sites);
+    patch_sites(replace_sites);
 
     return true;
 }

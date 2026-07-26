@@ -124,13 +124,13 @@ static void ensure_cave_frame() {
     g_cave_frame.valid = true;
 }
 
-int hook_dispatch_size(int handler_count, int original_size, bool detour,
+int hook_dispatch_size(int handler_count, int original_size, bool override_original,
                        bool strip_pac) {
     ensure_cave_frame();
     int save_size = (int)g_cave_frame.save.size() - (strip_pac ? 0 : 4);
     return save_size + handler_count * 4 +
            (int)g_cave_frame.restore.size() +
-           (detour ? (int)g_cave_frame.ret.size() : original_size + 4);
+           (override_original ? (int)g_cave_frame.ret.size() : original_size + 4);
 }
 
 std::vector<uint8_t> build_hook_dispatch(
@@ -139,7 +139,7 @@ std::vector<uint8_t> build_hook_dispatch(
     int hook_size,
     const std::vector<uint8_t> &original,
     const std::vector<uint64_t> &handler_vas,
-    bool detour,
+    bool override_original,
     bool strip_pac) {
 
     if (original.empty() || original.size() % 4 || hook_size % 4)
@@ -152,7 +152,7 @@ std::vector<uint8_t> build_hook_dispatch(
     uint64_t calls_va = cave_va + g_cave_frame.save.size() - save_offset;
     uint64_t resume_va = calls_va + handler_vas.size() * 4 + g_cave_frame.restore.size();
     std::vector<uint8_t> relocated;
-    if (!detour)
+    if (!override_original)
         relocated = patched(original, hook_va, resume_va);
 
     std::vector<uint8_t> out;
@@ -164,7 +164,7 @@ std::vector<uint8_t> build_hook_dispatch(
         out.insert(out.end(), bytes, bytes + 4);
     }
     out.insert(out.end(), g_cave_frame.restore.begin(), g_cave_frame.restore.end());
-    if (detour) {
+    if (override_original) {
         out.insert(out.end(), g_cave_frame.ret.begin(), g_cave_frame.ret.end());
     } else {
         out.insert(out.end(), relocated.begin(), relocated.end());
@@ -191,7 +191,7 @@ std::vector<uint8_t> build_hook_cave(
     const std::vector<uint8_t> &original,
     const std::vector<PluginBlob *> &plugin_blobs,
     const std::filesystem::path *target_binary,
-    bool detour, bool branch_host,
+    bool override_original, bool branch_host,
     const std::vector<uint64_t> *nop_addrs) {
 
     (void)nop_addrs;
@@ -205,7 +205,7 @@ std::vector<uint8_t> build_hook_cave(
     uint64_t target_dst_val = 0;
 
     if (branch_host) {
-        detour = true;
+        override_original = true;
         for (size_t i = 0; i < original.size(); i += 4) {
             uint32_t insn;
             memcpy(&insn, original.data() + i, 4);
@@ -223,11 +223,11 @@ std::vector<uint8_t> build_hook_cave(
     uint64_t resume_va = calls_va + n * 4 + g_cave_frame.restore.size();
 
     std::vector<uint8_t> patched_original;
-    if (!detour)
+    if (!override_original)
         patched_original = patched(original, hook_va, resume_va);
 
     int control_size = (int)g_cave_frame.save.size() + n * 4 + (int)g_cave_frame.restore.size()
-                       + (detour ? (int)g_cave_frame.ret.size() : (int)patched_original.size() + 4);
+                       + (override_original ? (int)g_cave_frame.ret.size() : (int)patched_original.size() + 4);
 
     std::vector<int> offsets;
     std::vector<std::vector<uint8_t>> chunks;
@@ -274,7 +274,7 @@ std::vector<uint8_t> build_hook_cave(
 
     out.insert(out.end(), g_cave_frame.restore.begin(), g_cave_frame.restore.end());
 
-    if (detour) {
+    if (override_original) {
         out.insert(out.end(), g_cave_frame.ret.begin(), g_cave_frame.ret.end());
     } else {
         out.insert(out.end(), patched_original.begin(), patched_original.end());
@@ -380,7 +380,7 @@ std::pair<uint64_t, uint64_t> patch_hook_macho(
     const std::vector<uint8_t> &original,
     const std::vector<PluginBlob *> &plugin_blobs,
     const std::string &seg_name_str,
-    bool detour, bool branch_host,
+    bool override_original, bool branch_host,
     const std::vector<uint64_t> *nop_addrs) {
 
     auto before = open_macho(binary_path.string());
@@ -391,7 +391,7 @@ std::pair<uint64_t, uint64_t> patch_hook_macho(
 
     int n = (int)plugin_blobs.size();
     int control = (int)g_cave_frame.save.size() + n * 4 + (int)g_cave_frame.restore.size()
-                  + (detour ? (int)g_cave_frame.ret.size() : patched_size(original) + 4);
+                  + (override_original ? (int)g_cave_frame.ret.size() : patched_size(original) + 4);
     int size = control;
     for (auto *b : plugin_blobs) {
         size += b->total_bytes();
@@ -415,7 +415,7 @@ std::pair<uint64_t, uint64_t> patch_hook_macho(
     int cave_off = segment_file_offset(*after.bin, seg_name_str);
 
     auto blob = build_hook_cave(cave_va, hook_va, hook_size, original, plugin_blobs,
-                                 &output_path, detour, branch_host, nop_addrs);
+                                 &output_path, override_original, branch_host, nop_addrs);
 
     if (size < (int)blob.size()) size = (int)blob.size();
     blob.resize(size, 0);

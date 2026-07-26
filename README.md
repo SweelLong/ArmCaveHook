@@ -33,29 +33,26 @@ extern "C" int replacement(int a, int b) {
 }
 
 void init(void) {
-    hook(0x100000498, replacement, w0, w1);
+    hook_replace(0x100000498, replacement, w0, w1);
 }
 ```
 
-`SEGMENT_NAME` 是插件段名。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。每个插件只生成一个 segment；框架会先汇总该插件全部 hook dispatcher、寄存器 wrapper、编译后代码、常量数据和重定位所需空间，再创建最终大小的 segment。插件代码和常量只存放一份，多个 `hook`/`pre_hook` 共用它们。
+`SEGMENT_NAME` 是插件段名。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。每个插件只生成一个 segment；框架会先汇总该插件全部 hook_replace dispatcher、寄存器 wrapper、编译后代码、常量数据和重定位所需空间，再创建最终大小的 segment。插件代码和常量只存放一份，多个 `hook_replace`/`hook_detour` 共用它们。
 
 ## 标准 API
 
 | API | 作用 |
 |---|---|
-| `hook(addr, handler, ...)` | 函数替代 hook，从目标地址跳到 handler；末尾可传寄存器名，例如 `x0, x1`，框架会将其传给 handler。 |
-| `pre_hook(addr, handler, ...)` | 前置 hook，先调用 handler，再执行被覆盖的原指令并回到原函数；末尾可传寄存器名，例如 `x20`。 |
-| `inject_asm(addr, "instruction"[, "expected"])` | 汇编并写入 AArch64 指令；提供 `expected` 时，仅在等长的原指令序列匹配时写入。 |
-| `target_fn(ret, name, args, symbol)` | 按符号名声明目标二进制里的函数。 |
-| `target_va_fn(ret, name, args, addr)` | 按固定虚拟地址声明目标二进制里的函数，patch 后生成相对 `BL/B` relocation。 |
-| `target_obj(name, symbol[, type])` | 按符号名声明目标对象；提供 `type` 时声明为强类型对象。 |
-| `target_obj_fn(name, symbol, ...)` | 按符号名声明目标对象函数；末尾参数是函数参数类型，例如 `char`。 |
-| `target_obj_call(fn, obj, ...)` | 调用目标对象函数。 |
-| `target_addr(va)` | 将 VMA 转为运行时地址（ADRP+PAGEOFF12，抗 ASLR），用于数据地址引用。 |
-| `target_call(ret, addr, args, ...)` | 按虚拟地址快速调用目标内部函数（BR26 PC-relative BL，抗 ASLR）；末尾参数是实际调用参数，例如 `a, b`，`args` 是参数类型列表，例如 `(int, int)`。 |
-| `read<T>(addr)` / `write<T>(addr, value)` | 读写目标进程内存。 |
-| `vcall(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
-| `object_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
+| `hook_replace(addr, handler, ...)` | 用 handler 替代目标函数；handler 返回后直接离开原函数。末尾可传寄存器名，例如 `x0, x1`。 |
+| `hook_detour(addr, handler, ...)` | 在目标地址处先调用 handler，再执行被覆盖的原指令并回到原函数；末尾可传寄存器名，例如 `x20`。 |
+| `patch_asm(addr, "instruction"[, "expected"])` | 汇编并写入 AArch64 指令；提供 `expected` 时，仅在等长的原指令序列匹配时写入。 |
+| `bind_obj_by_sym(type, name, symbol)` | 将对象声明绑定到目标二进制里的符号，包括全局变量和静态对象。 |
+| `bind_func_by_sym(ret, name, args, symbol)` | 将函数声明绑定到目标二进制里的符号。 |
+| `bind_func_by_addr(ret, name, args, addr)` | 将函数声明绑定到固定虚拟地址，patch 后生成相对 `BL/B` relocation。 |
+| `resolve_addr(va)` | 将 VMA 转为运行时地址（ADRP+PAGEOFF12，抗 ASLR），用于数据地址引用。 |
+| `read_mem<T>(addr)` / `write_mem<T>(addr, value)` | 读写目标进程内存。 |
+| `resolve_vfunc(obj, offset)` | 读取对象虚表中指定偏移的函数指针。 |
+| `read_typeinfo(obj)` | 读取 Itanium C++ ABI vtable 前的 typeinfo 指针。 |
 | `armcave_itoa(buf, value)` | 将整数写入缓冲区并返回字符数。 |
 | `armcave_json_value(json, key, out, size)` | 从数字 key 的 JSON 对象中读取字符串值。 |
 | `armcave_apple_string_make(text)` | 构造 Apple 24 字节短字符串参数。 |
@@ -66,14 +63,14 @@ void init(void) {
 
 传入 hook 寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
 
-`hook` 和 `pre_hook` 都是静态写跳转到 code cave，但控制流不同：
+`hook_replace` 和 `hook_detour` 都是静态写跳转到 code cave，但控制流不同：
 
 ```text
-hook:     target -> handler -> ret
-pre_hook: target -> handler -> 原始被覆盖指令 -> target + 4
+hook_replace: target -> cave -> handler -> RET
+hook_detour:  target -> cave -> handler -> 原始被覆盖指令 -> target + 4
 ```
 
-因此 `hook` 适合替换一个函数或入口点，`pre_hook` 适合在原逻辑前插入一段代码并继续执行原函数。`pre_hook` 的 hook 点应放在目标函数已经把关键状态保存到 callee-saved 寄存器之后；handler 应遵守 AArch64 调用约定，不要依赖 caller-saved 寄存器在返回后保持不变。
+因此 `hook_replace` 适合完全替代一个函数或入口点，`hook_detour` 适合在原逻辑中插入处理并继续执行。`hook_detour` 的 hook 点应放在目标函数已经把关键状态保存到 callee-saved 寄存器之后；handler 应遵守 AArch64 调用约定，不要依赖 caller-saved 寄存器在返回后保持不变。
 
 ## 指令注入
 
@@ -81,61 +78,52 @@ pre_hook: target -> handler -> 原始被覆盖指令 -> target + 4
 #define SEGMENT_NAME patchseg
 
 void init(void) {
-    inject_asm(0x100500000, "NOP");
-    inject_asm(0x100500004, "MOV W0, #1; RET", "NOP; NOP");
+    patch_asm(0x100500000, "NOP");
+    patch_asm(0x100500004, "MOV W0, #1; RET", "NOP; NOP");
 }
 ```
 
-`inject_asm` 用来写 AArch64 汇编文本；需要保护版本差异时，使用带 `expected` 的形式。
+`patch_asm` 用来写 AArch64 汇编文本；需要保护版本差异时，使用带 `expected` 的形式。
 
-默认跳转使用 AArch64 `B` 指令。`B` 是 26-bit 相对跳转，按 4 字节指令对齐计算，范围是当前位置前后 128 MiB。Mach-O hook cave 入口会先执行 `XPACLRI` 再保存 `x29/x30`，用于清理带 PAC 签名位的返回地址，避免 detour hook 在 `RET` 时跳到签名后的非规范地址。框架不会在普通 hook 路径中自动生成 `BR` 远跳；目标超出 `B/BL` 范围时会报错。
+默认跳转使用 AArch64 `B` 指令。`B` 是 26-bit 相对跳转，按 4 字节指令对齐计算，范围是当前位置前后 128 MiB。Mach-O hook cave 入口会先执行 `XPACLRI` 再保存 `x29/x30`，用于清理带 PAC 签名位的返回地址，避免 `hook_replace` 在 `RET` 时跳到签名后的非规范地址。框架不会自动生成 `BR` 远跳；目标超出 `B/BL` 范围时会报错。
 
-## 目标函数调用
+## 目标绑定与调用
 
-`target_fn` 用来把插件函数声明绑定到目标二进制里的真实符号。它不是指令注入 API；指令注入使用 `inject_asm`。
+`bind_func_by_sym` 和 `bind_obj_by_sym` 分别把函数、对象声明绑定到目标二进制里的真实符号。这里的对象包括全局变量和静态对象。普通函数和对象方法统一使用 `bind_func_by_sym`；声明对象方法时，按目标 ABI 将对象指针作为第一个参数。调用已绑定的函数时直接使用 C/C++ 函数调用语法。它们不是指令注入 API；指令注入使用 `patch_asm`。
 
 ```cpp
-target_obj(cout_obj, "__ZNSt3__14coutE");
-target_obj_fn(cout_put, "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE3putEc", char);
-target_obj_fn(cout_flush, "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE5flushEv");
+bind_obj_by_sym(u8, cout_obj, "__ZNSt3__14coutE");
+bind_func_by_sym(void *, cout_put, (void *, char), "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE3putEc");
+bind_func_by_sym(void *, cout_flush, (void *), "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE5flushEv");
 
 extern "C" int hook_func(int a, int b) {
     const char *out = "hook ！！\n";
     for (u64 i = 0; out[i]; ++i) {
-        target_obj_call(cout_put, cout_obj, out[i]);
+        cout_put(&cout_obj, out[i]);
     }
-    target_obj_call(cout_flush, cout_obj);
+    cout_flush(&cout_obj);
     return a + b;
 }
 ```
 
-目标内部函数只有固定虚拟地址时，优先用 `target_va_fn` 声明。它让编译器生成普通函数调用 relocation，patch 阶段会把目标解析为固定 VA，最终通常是相对 `BL`，尾调用可能优化成相对 `B`：
+目标内部函数只有固定虚拟地址时，优先用 `bind_func_by_addr` 声明。它让编译器生成普通函数调用 relocation，patch 阶段会把目标解析为固定 VA，最终通常是相对 `BL`，尾调用可能优化成相对 `B`：
 
 ```cpp
-target_va_fn(int, internal_add, (int, int), 0x100012340);
+bind_func_by_addr(int, internal_add, (int, int), 0x100012340);
 
 static int call_internal(int a, int b) {
     return internal_add(a, b);
 }
 ```
 
-访问固定数据地址（全局变量、typeinfo 等）用 `target_addr`。它生成 ADRP+PAGEOFF12 relocation，patch 阶段解析为绝对 VMA，运行时 PC-relative 访问，天然抗 ASLR：
+访问固定数据地址（全局变量、typeinfo 等）用 `resolve_addr`。它生成 ADRP+PAGEOFF12 relocation，patch 阶段解析为绝对 VMA，运行时 PC-relative 访问，天然抗 ASLR：
 
 ```cpp
 #define kAutoplayState 0x1014ED000
 
 static AutoplayState *state() {
-    return (AutoplayState *)target_addr(kAutoplayState);
+    return (AutoplayState *)resolve_addr(kAutoplayState);
 }
-```
-
-`target_call` 也走 BR26 PC-relative BL，不再通过函数指针间接调用，同样抗 ASLR：
-
-```cpp
-static int call_internal(int a, int b) {
-    return target_call(int, 0x100012340, (int, int), a, b);
-}
-
 ```
 
 ## C++ 使用范围
@@ -213,4 +201,4 @@ output = binaries/bin.patched
 - [ ] 补充性能基准测试：测量 Hook 前后延迟，并与 Frida Stalker、Dobby、E9Patch 等工具进行可复现的横向对比。
 - [ ] 增强错误日志与诊断信息：输出结构化失败原因、地址、重定位类型和上下文，替代笼统的 `SKIP` / `errors` 提示。
 - [ ] 消除固定 VMA 的版本绑定：组合动态符号、PLT/GOT、字节签名、调用图锚点和用户规则，升级目标二进制后优先自动重定位。
-- [ ] 改善隐藏或移除符号的定位：在没有符号元数据时使用稳定代码签名和用户规则，减少对 `target_va_fn` / `target_addr` 固定地址配置的依赖。
+- [ ] 改善隐藏或移除符号的定位：在没有符号元数据时使用稳定代码签名和用户规则，减少对 `bind_func_by_addr` / `resolve_addr` 固定地址配置的依赖。

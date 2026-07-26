@@ -33,29 +33,26 @@ extern "C" int replacement(int a, int b) {
 }
 
 void init(void) {
-    hook(0x100000498, replacement, w0, w1);
+    hook_replace(0x100000498, replacement, w0, w1);
 }
 ```
 
-`SEGMENT_NAME` is the plugin segment name. Mach-O uses `__testhook`, while ELF uses `.testhook`. Each plugin creates exactly one segment. The framework first totals the space required by all hook dispatchers, register wrappers, compiled code, constant data, and relocations, then creates the final-sized segment. Plugin code and constants are stored once and shared by all `hook`/`pre_hook` actions.
+`SEGMENT_NAME` is the plugin segment name. Mach-O uses `__testhook`, while ELF uses `.testhook`. Each plugin creates exactly one segment. The framework first totals the space required by all hook_replace dispatchers, register wrappers, compiled code, constant data, and relocations, then creates the final-sized segment. Plugin code and constants are stored once and shared by all `hook_replace`/`hook_detour` actions.
 
 ## Standard API
 
 | API | Description |
 |---|---|
-| `hook(addr, handler, ...)` | Function replacement hook, jumps from target address to handler; optional trailing register names such as `x0, x1` are passed to the handler. |
-| `pre_hook(addr, handler, ...)` | Pre-hook, calls handler first, then executes the overwritten original instructions and returns to the original function; trailing register names such as `x20` are optional. |
-| `inject_asm(addr, "instruction"[, "expected"])` | Assemble and write AArch64 instructions; with `expected`, write only when an equally-sized original instruction sequence matches. |
-| `target_fn(ret, name, args, symbol)` | Declares a function in the target binary by symbol name. |
-| `target_va_fn(ret, name, args, addr)` | Declares a function in the target binary by fixed virtual address, generates relative `BL/B` relocation after patching. |
-| `target_obj(name, symbol[, type])` | Declares a target object by symbol name; with `type`, declares a strongly-typed object. |
-| `target_obj_fn(name, symbol, ...)` | Declares a target object function by symbol name; trailing arguments are the function parameter types, such as `char`. |
-| `target_obj_call(fn, obj, ...)` | Calls a target object function. |
-| `target_addr(va)` | Converts VMA to runtime address (ADRP+PAGEOFF12, ASLR-resistant) for data address references. |
-| `target_call(ret, addr, args, ...)` | Quickly calls a target internal function by virtual address (BR26 PC-relative BL, ASLR-resistant); trailing arguments are call values such as `a, b`, while `args` is the parameter type list, such as `(int, int)`. |
-| `read<T>(addr)` / `write<T>(addr, value)` | Read/write target process memory. |
-| `vcall(obj, offset)` | Reads a function pointer at a given offset from an object's vtable. |
-| `object_typeinfo(obj)` | Reads the typeinfo pointer before the vtable in Itanium C++ ABI. |
+| `hook_replace(addr, handler, ...)` | Replaces the target function with handler; returning from handler leaves the original function. Optional trailing register names such as `x0, x1` are supported. |
+| `hook_detour(addr, handler, ...)` | Calls handler at the address, then executes the overwritten original instructions and returns to the original function; trailing register names such as `x20` are optional. |
+| `patch_asm(addr, "instruction"[, "expected"])` | Assemble and write AArch64 instructions; with `expected`, write only when an equally-sized original instruction sequence matches. |
+| `bind_obj_by_sym(type, name, symbol)` | Binds an object declaration, including a global variable or static object, to a symbol in the target binary. |
+| `bind_func_by_sym(ret, name, args, symbol)` | Binds a function declaration to a symbol in the target binary. |
+| `bind_func_by_addr(ret, name, args, addr)` | Binds a function declaration to a fixed virtual address, generating a relative `BL/B` relocation after patching. |
+| `resolve_addr(va)` | Converts VMA to runtime address (ADRP+PAGEOFF12, ASLR-resistant) for data address references. |
+| `read_mem<T>(addr)` / `write_mem<T>(addr, value)` | Read/write target process memory. |
+| `resolve_vfunc(obj, offset)` | Reads a function pointer at a given offset from an object's vtable. |
+| `read_typeinfo(obj)` | Reads the typeinfo pointer before the vtable in Itanium C++ ABI. |
 | `armcave_itoa(buf, value)` | Write an integer to a buffer and return its character count. |
 | `armcave_json_value(json, key, out, size)` | Read a string value from a JSON object using an integer key. |
 | `armcave_apple_string_make(text)` | Build an Apple 24-byte short-string argument. |
@@ -66,14 +63,14 @@ void init(void) {
 
 When hook registers are provided, the framework generates a wrapper that moves them to the standard AArch64 calling convention argument registers.
 
-Both `hook` and `pre_hook` statically write jumps to a code cave, but differ in control flow:
+Both `hook_replace` and `hook_detour` statically write jumps to a code cave, but differ in control flow:
 
 ```text
-hook:     target -> handler -> ret
-pre_hook: target -> handler -> original overwritten instruction -> target + 4
+hook_replace: target -> cave -> handler -> RET
+hook_detour:  target -> cave -> handler -> original overwritten instruction -> target + 4
 ```
 
-Thus `hook` is suitable for replacing a function or entry point, while `pre_hook` is suitable for inserting code before the original logic and continuing execution. The hook point for `pre_hook` should be placed after the target function has saved critical state to callee-saved registers; the handler should follow the AArch64 calling convention and not rely on caller-saved registers remaining unchanged after return.
+Thus `hook_replace` is suitable for completely replacing a function or entry point, while `hook_detour` inserts handling into the original flow and then continues it. The hook point for `hook_detour` should be placed after the target function has saved critical state to callee-saved registers; the handler should follow the AArch64 calling convention and not rely on caller-saved registers remaining unchanged after return.
 
 ## Instruction Injection
 
@@ -81,61 +78,52 @@ Thus `hook` is suitable for replacing a function or entry point, while `pre_hook
 #define SEGMENT_NAME patchseg
 
 void init(void) {
-    inject_asm(0x100500000, "NOP");
-    inject_asm(0x100500004, "MOV W0, #1; RET", "NOP; NOP");
+    patch_asm(0x100500000, "NOP");
+    patch_asm(0x100500004, "MOV W0, #1; RET", "NOP; NOP");
 }
 ```
 
-`inject_asm` writes AArch64 assembly text. Use the form with `expected` when the patch should be guarded against version changes.
+`patch_asm` writes AArch64 assembly text. Use the form with `expected` when the patch should be guarded against version changes.
 
-Default jumps use the AArch64 `B` instruction. `B` is a 26-bit relative jump, aligned to 4-byte instruction boundaries, with a range of 128 MiB forward and backward from the current position. The Mach-O hook cave entry executes `XPACLRI` before saving `x29/x30` to clear PAC-signed return addresses, preventing detour hooks from jumping to non-canonical signed addresses on `RET`. The framework does not automatically generate `BR` far jumps in normal hook paths; it will report an error if the target is out of `B/BL` range.
+Default jumps use the AArch64 `B` instruction. `B` is a 26-bit relative jump, aligned to 4-byte instruction boundaries, with a range of 128 MiB forward and backward from the current position. The Mach-O hook cave entry executes `XPACLRI` before saving `x29/x30` to clear PAC-signed return addresses, preventing `hook_replace` from jumping to a non-canonical signed address on `RET`. The framework does not automatically generate `BR` far jumps; it reports an error if the target is out of `B/BL` range.
 
-## Target Function Calls
+## Target Binding And Calls
 
-`target_fn` binds a plugin function declaration to a real symbol in the target binary. It is not an instruction injection API; for that, use `inject_asm`.
+`bind_func_by_sym` and `bind_obj_by_sym` bind function and object declarations to real symbols in the target binary. Objects include global variables and static objects. Regular functions and object methods both use `bind_func_by_sym`; for an object method, declare the object pointer as the first parameter according to the target ABI. Call bound functions directly with normal C/C++ function-call syntax. These are not instruction injection APIs; for that, use `patch_asm`.
 
 ```cpp
-target_obj(cout_obj, "__ZNSt3__14coutE");
-target_obj_fn(cout_put, "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE3putEc", char);
-target_obj_fn(cout_flush, "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE5flushEv");
+bind_obj_by_sym(u8, cout_obj, "__ZNSt3__14coutE");
+bind_func_by_sym(void *, cout_put, (void *, char), "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE3putEc");
+bind_func_by_sym(void *, cout_flush, (void *), "__ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE5flushEv");
 
 extern "C" int hook_func(int a, int b) {
     const char *out = "hook ！！\n";
     for (u64 i = 0; out[i]; ++i) {
-        target_obj_call(cout_put, cout_obj, out[i]);
+        cout_put(&cout_obj, out[i]);
     }
-    target_obj_call(cout_flush, cout_obj);
+    cout_flush(&cout_obj);
     return a + b;
 }
 ```
 
-When a target internal function only has a fixed virtual address, prefer `target_va_fn` to declare it. This lets the compiler generate a normal function call relocation; the patching stage resolves it to a fixed VA, resulting in a relative `BL` (or relative `B` for tail calls):
+When a target internal function only has a fixed virtual address, prefer `bind_func_by_addr` to declare it. This lets the compiler generate a normal function call relocation; the patching stage resolves it to a fixed VA, resulting in a relative `BL` (or relative `B` for tail calls):
 
 ```cpp
-target_va_fn(int, internal_add, (int, int), 0x100012340);
+bind_func_by_addr(int, internal_add, (int, int), 0x100012340);
 
 static int call_internal(int a, int b) {
     return internal_add(a, b);
 }
 ```
 
-Use `target_addr` to access fixed data addresses (global variables, typeinfo, etc.). It generates an ADRP+PAGEOFF12 relocation, resolved to an absolute VMA during patching, and accessed PC-relatively at runtime, inherently ASLR-resistant:
+Use `resolve_addr` to access fixed data addresses (global variables, typeinfo, etc.). It generates an ADRP+PAGEOFF12 relocation, resolved to an absolute VMA during patching, and accessed PC-relatively at runtime, inherently ASLR-resistant:
 
 ```cpp
 #define kAutoplayState 0x1014ED000
 
 static AutoplayState *state() {
-    return (AutoplayState *)target_addr(kAutoplayState);
+    return (AutoplayState *)resolve_addr(kAutoplayState);
 }
-```
-
-`target_call` now also uses BR26 PC-relative BL instead of indirect function pointer calls, also ASLR-resistant:
-
-```cpp
-static int call_internal(int a, int b) {
-    return target_call(int, 0x100012340, (int, int), a, b);
-}
-
 ```
 
 ## C++ Usage Scope
@@ -213,4 +201,4 @@ The scripts configure and build `build/armcave` automatically.
 - [ ] Add reproducible performance benchmarks for Hook overhead and comparisons with Frida Stalker, Dobby, and E9Patch.
 - [ ] Improve diagnostics with structured failure reasons, addresses, relocation types, and context instead of generic `SKIP` / `errors` messages.
 - [ ] Remove fixed-VMA version coupling using dynamic symbols, PLT/GOT, byte signatures, call-graph anchors, and user rules to relocate automatically after target upgrades.
-- [ ] Improve location of hidden or removed symbols with stable code signatures and user rules, reducing reliance on fixed `target_va_fn` / `target_addr` configuration.
+- [ ] Improve location of hidden or removed symbols with stable code signatures and user rules, reducing reliance on fixed `bind_func_by_addr` / `resolve_addr` configuration.
