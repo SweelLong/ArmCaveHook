@@ -189,7 +189,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     if (compiled.empty()) return false;
 
     auto &binary = parse_binary(std::filesystem::exists(output_path) ? output_path : input_path);
-    // parse_binary owns one replaceable cache; keep format state before later reparses.
+
     const bool target_is_macho = binary.is_macho();
 
     struct HookSite {
@@ -243,7 +243,6 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         }
     }
 
-    // Direct patches
     for (auto *action : direct) {
         auto payload = patch_payload(*action);
         if (action->has_expected && !matches_expected(output_path, *action, payload)) {
@@ -309,7 +308,6 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         cp.content.resize(cp.segment_size, 0);
     }
 
-    // Create all plugin segments only after their complete sizes are known.
     for (auto &cp : compiled) {
         if (!cp.has_hooks) continue;
         SegmentPlan plan;

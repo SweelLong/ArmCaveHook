@@ -289,7 +289,6 @@ std::vector<uint8_t> build_hook_cave(
         while (out.size() % 4 != 0) out.push_back(0);
     }
 
-    // Patch markers DST/NEXT/CONV in branch_host mode
     if (target_dst_val) {
         struct { const uint8_t *marker; uint64_t target; } markers[] = {
             {DST, target_dst_val},

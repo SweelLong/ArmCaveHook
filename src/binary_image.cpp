@@ -93,7 +93,7 @@ std::string table_string(const std::vector<uint8_t> &data, uint64_t table_offset
     return std::string((const char *)data.data() + start, end - start);
 }
 
-} // namespace
+}
 
 bool BinarySymbol::undefined() const {
     return (type & 0x0e) == 0;
@@ -446,8 +446,6 @@ void BinaryImage::parse_elf_dynamic(uint64_t dynamic_offset, uint64_t dynamic_si
     parse_relas(rela_va, relasz);
     parse_relas(jmprel_va, pltrelsz);
 
-    // Associate AArch64 PLT entries with their GOT relocation slots. This is
-    // derived from instructions, so it remains available without sections.
     if (pltgot_va) {
         for (const auto &segment : segments_) {
             if ((segment.init_protection & 1) == 0 || segment.file_offset > data_.size()) continue;

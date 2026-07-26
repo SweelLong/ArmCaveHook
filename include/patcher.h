@@ -6,15 +6,13 @@
 
 struct PluginBlob;
 
-// Branch encoding
 uint32_t encode_b(uint64_t src_va, uint64_t dst_va);
 uint32_t encode_bl(uint64_t src_va, uint64_t dst_va);
-int target_insn(uint32_t insn, uint64_t va);
 
-// Build the shared control block used by a hook site. Handler code can live in
-// any plugin segment as long as it is within AArch64 BL range.
+int target_insn(uint32_t insn, uint64_t va);
 int hook_dispatch_size(int handler_count, int original_size, bool override_original,
                        bool strip_pac);
+
 std::vector<uint8_t> build_hook_dispatch(
     uint64_t cave_va,
     uint64_t hook_va,
@@ -30,7 +28,6 @@ std::vector<uint8_t> build_plugin_wrapper(
     uint64_t wrapper_va,
     uint64_t plugin_va);
 
-// Build a complete code cave
 std::vector<uint8_t> build_hook_cave(
     uint64_t cave_va,
     uint64_t hook_va,
@@ -42,17 +39,14 @@ std::vector<uint8_t> build_hook_cave(
     bool branch_host = false,
     const std::vector<uint64_t> *nop_addrs = nullptr);
 
-// Patch a hook window (write B + NOPs)
 void patch_hook_window(const std::filesystem::path &binary_path,
                        const std::filesystem::path &output_path,
                        uint64_t src_va, int size, uint64_t dst_va);
 
-// Write bytes at a given VA
 void patch_bytes_va(const std::filesystem::path &binary_path,
                     const std::filesystem::path &output_path,
                     uint64_t va, const std::vector<uint8_t> &payload);
 
-// Mach-O specific full hook patch (adds segment, builds cave, patches)
 std::pair<uint64_t, uint64_t> patch_hook_macho(
     const std::filesystem::path &binary_path,
     const std::filesystem::path &output_path,
