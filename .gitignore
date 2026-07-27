@@ -15,6 +15,8 @@ CMakeUserPresets.json
 .DS_Store
 
 # User
-binaries/*
-!binaries/.gitkeep
 *.patched
+
+# These directories are now in the ArmCaveHook-Arcplugins submodule
+/plugins/
+/binaries/

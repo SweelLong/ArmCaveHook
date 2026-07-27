@@ -16,6 +16,17 @@
 
 ArmCaveHook is an AArch64 static hooking framework. Plugins are written in `.cpp`, and the framework compiles them into code cave sections, then patches the target binary according to the plugin's entry declarations.
 
+## Quick Start
+
+```bash
+git clone --recursive https://github.com/SweelLong/ArmCaveHook.git
+cd ArmCaveHook
+./build.sh
+```
+
+Plugins and binaries are managed by the [`ArmCaveHook-Arcplugins`](https://github.com/SweelLong/ArmCaveHook-Arcplugins) submodule.
+You can create your own plugin repository by modifying `input`, `output`, and `plugins` in `armcave.conf`.
+
 ## Plugin Specification
 
 The plugin must include the standard header at the top:

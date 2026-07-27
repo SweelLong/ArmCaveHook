@@ -23,6 +23,12 @@ conf_value() {
 CONF=armcave.conf
 [ -f "$CONF" ] || fail "$CONF was not found"
 
+# Ensure ArmCaveHook-Arcplugins submodule is present
+if [ ! -d "ArmCaveHook-Arcplugins/.git" ] && [ ! -f "ArmCaveHook-Arcplugins/.git" ]; then
+    git submodule update --init --depth 1 2>/dev/null || \
+        fail "ArmCaveHook-Arcplugins submodule not found. Run: git submodule update --init"
+fi
+
 input=$(conf_value input)
 output=$(conf_value output)
 plugins=$(conf_value plugins)

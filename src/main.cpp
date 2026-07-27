@@ -20,12 +20,10 @@ int main(int argc, char **argv) {
 
     std::filesystem::path input_path;
     std::filesystem::path output_path;
-    std::filesystem::path plugins_dir = "plugins";
+    std::filesystem::path plugins_dir;
     std::string whitelist, blacklist;
 
     input_path = argv[1];
-    output_path = input_path;
-    output_path += ".patched";
 
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) {

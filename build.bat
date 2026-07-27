@@ -19,6 +19,16 @@ if not exist "%conf%" (
     echo Error: %conf% was not found. 1>&2
     exit /b 1
 )
+
+:: Ensure ArmCaveHook-Arcplugins submodule is present
+if not exist "ArmCaveHook-Arcplugins\.git" (
+    git submodule update --init --depth 1 2>nul
+    if errorlevel 1 (
+        echo Error: ArmCaveHook-Arcplugins submodule not found. Run: git submodule update --init 1>&2
+        exit /b 1
+    )
+)
+
 call :read_conf
 if not defined input (
     echo Error: input is not set in %conf%. 1>&2

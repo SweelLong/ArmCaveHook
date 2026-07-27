@@ -5,7 +5,7 @@
             "compilerPath": "/usr/bin/clang++",
             "includePath": [
                 "${workspaceFolder}/include",
-                "${workspaceFolder}/plugins"
+                "${workspaceFolder}/ArmCaveHook-Arcplugins/plugins"
             ],
             "cStandard": "c17",
             "cppStandard": "c++17",
@@ -16,7 +16,7 @@
             "compilerPath": "clang++",
             "includePath": [
                 "${workspaceFolder}/include",
-                "${workspaceFolder}/plugins"
+                "${workspaceFolder}/ArmCaveHook-Arcplugins/plugins"
             ],
             "cStandard": "c17",
             "cppStandard": "c++17",
@@ -27,7 +27,7 @@
             "compilerPath": "clang++.exe",
             "includePath": [
                 "${workspaceFolder}/include",
-                "${workspaceFolder}/plugins"
+                "${workspaceFolder}/ArmCaveHook-Arcplugins/plugins"
             ],
             "cStandard": "c17",
             "cppStandard": "c++17",

@@ -16,6 +16,17 @@
 
 ArmCaveHook 是一个 AArch64 静态 hook 框架。插件使用 `.cpp` 编写，框架把插件编译成 cave 代码段，再按插件入口声明修改目标二进制。
 
+## 快速开始
+
+```bash
+git clone --recursive https://github.com/SweelLong/ArmCaveHook.git
+cd ArmCaveHook
+./build.sh
+```
+
+插件和二进制文件由子模块 [`ArmCaveHook-Arcplugins`](https://github.com/SweelLong/ArmCaveHook-Arcplugins) 管理。
+你也可以创建自己的插件仓库，只需在 `armcave.conf` 中修改 `input`、`output`、`plugins` 路径即可。
+
 ## 插件规范
 
 插件开头必须包含标准库头文件：

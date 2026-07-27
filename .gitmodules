@@ -1,0 +1,3 @@
+[submodule "ArmCaveHook-Arcplugins"]
+	path = ArmCaveHook-Arcplugins
+	url = https://github.com/SweelLong/ArmCaveHook-Arcplugins.git
