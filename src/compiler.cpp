@@ -186,7 +186,7 @@ static std::vector<uint8_t> extract_cave_asm() {
     }
     std::string cmd = shell_quote(clang_driver(true)) + " -target arm64-apple-macosx13.0 -c -Oz -fno-stack-protector "
                       "-std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics "
-                      "-I" + shell_quote((project_root() / "plugins").string()) + " "
+                      "-I" + shell_quote((project_root() / "include").string()) + " "
                       + shell_quote(src.string()) + " -o " + shell_quote(out.string()) + quiet_redirect();
     int rc = system(cmd.c_str());
     (void)rc;
@@ -245,7 +245,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
 
     std::string cmd = shell_quote(clang_driver(true)) + " -target arm64-apple-macosx13.0 -c -Oz -fno-stack-protector "
                       "-std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics "
-                      "-I" + shell_quote((project_root() / "plugins").string());
+                      "-I" + shell_quote((project_root() / "include").string());
     bool target_is_elf = false;
     if (target_binary) {
         std::ifstream target(*target_binary, std::ios::binary);
@@ -264,7 +264,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     if (rc != 0) {
         cmd = shell_quote(clang_driver(true)) + " -target arm64-apple-macosx13.0 -c -Oz -fno-stack-protector "
               "-std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics "
-              "-I" + shell_quote((project_root() / "plugins").string());
+              "-I" + shell_quote((project_root() / "include").string());
         if (target_is_elf)
             cmd += " -DARMCAVE_ELF=1";
         if (!target_binary)
