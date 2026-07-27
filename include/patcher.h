@@ -9,7 +9,7 @@ struct PluginBlob;
 uint32_t encode_b(uint64_t src_va, uint64_t dst_va);
 uint32_t encode_bl(uint64_t src_va, uint64_t dst_va);
 
-int target_insn(uint32_t insn, uint64_t va);
+uint64_t target_insn(uint32_t insn, uint64_t va);
 int hook_dispatch_size(int handler_count, int original_size, bool override_original,
                        bool strip_pac);
 

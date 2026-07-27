@@ -31,21 +31,21 @@ uint32_t encode_bl(uint64_t src_va, uint64_t dst_va) {
     return 0x94000000 | (imm & 0x03FFFFFF);
 }
 
-int target_insn(uint32_t insn, uint64_t va) {
+uint64_t target_insn(uint32_t insn, uint64_t va) {
     if ((insn & 0xFC000000) == 0x14000000 || (insn & 0xFC000000) == 0x94000000) {
         int32_t imm = insn & 0x3FFFFFF;
         if (imm & 0x2000000) imm -= 0x4000000;
-        return (int)(va + imm * 4);
+        return va + (int64_t)imm * 4;
     }
     if ((insn & 0xFF000010) == 0x54000000 || (insn & 0x7E000000) == 0x34000000) {
         int32_t imm = (insn >> 5) & 0x7FFFF;
         if (imm & 0x40000) imm -= 0x80000;
-        return (int)(va + imm * 4);
+        return va + (int64_t)imm * 4;
     }
     if ((insn & 0x7E000000) == 0x36000000) {
         int32_t imm = (insn >> 19) & 0x3FFF;
         if (imm & 0x2000) imm -= 0x4000;
-        return (int)(va + imm * 4);
+        return va + (int64_t)imm * 4;
     }
     return 0;
 }
@@ -209,7 +209,7 @@ std::vector<uint8_t> build_hook_cave(
         for (size_t i = 0; i < original.size(); i += 4) {
             uint32_t insn;
             memcpy(&insn, original.data() + i, 4);
-            int tgt = target_insn(insn, hook_va + i);
+            uint64_t tgt = target_insn(insn, hook_va + i);
             if (tgt) {
                 target_dst_val = tgt;
                 break;
