@@ -13,14 +13,8 @@ need_tool() {
     command -v "$1" >/dev/null 2>&1 || fail "$1 was not found in PATH"
 }
 
-conf_value() {
-    key=$1
-    sed -n "s/^${key}[[:space:]]*=[[:space:]]*//p" "$CONF" | tail -n 1
-}
-
-[ "$#" -eq 0 ] || fail "build.sh does not accept arguments; edit armcave.conf"
-
-CONF=armcave.conf
+# Config file path (can be overridden via CONF env var)
+CONF="${CONF:-armcave.conf}"
 [ -f "$CONF" ] || fail "$CONF was not found"
 
 # Ensure ArmCaveHook-Arcplugins submodule is present
@@ -29,18 +23,55 @@ if [ ! -d "ArmCaveHook-Arcplugins/.git" ] && [ ! -f "ArmCaveHook-Arcplugins/.git
         fail "ArmCaveHook-Arcplugins submodule not found. Run: git submodule update --init"
 fi
 
-input=$(conf_value input)
-output=$(conf_value output)
-plugins=$(conf_value plugins)
-wl=$(conf_value plugin_whitelist)
-bl=$(conf_value plugin_blacklist)
-build_dir=$(conf_value build_dir)
+# Read a value from the config file.
+# Usage: conf_value [section] key
+#   section="" or omitted → global (before any [section])
+#   section="android"    → inside [android]
+conf_value() {
+    section=$1
+    key=$2
+    if [ -z "$section" ]; then
+        # Global: quit before first [section]
+        sed -n '/^\[/q; s/^[[:space:]]*'"$key"'[[:space:]]*=[[:space:]]*//p' "$CONF" | tail -n 1
+    else
+        # Section-specific
+        sed -n '/^\['"$section"'\]/,/^\[/{
+            /^\[/d
+            s/^[[:space:]]*'"$key"'[[:space:]]*=[[:space:]]*//p
+        }' "$CONF" | tail -n 1
+    fi
+}
 
-[ -n "$input" ] || fail "input is not set in $CONF"
-[ -n "$output" ] || fail "output is not set in $CONF"
+# Get list of profile names with enable = true
+get_enabled_profiles() {
+    awk '
+        /^\[/ {
+            if (profile != "" && enabled) print profile
+            profile = substr($0, 2, length($0) - 2)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", profile)
+            enabled = 0
+        }
+        /^[[:space:]]*enable[[:space:]]*=[[:space:]]*true/ && profile != "" {
+            enabled = 1
+        }
+        END {
+            if (profile != "" && enabled) print profile
+        }
+    ' "$CONF"
+}
+
+# --- Parse global values ---
+plugins=$(conf_value "" plugins)
+build_dir=$(conf_value "" build_dir)
+
 [ -n "$plugins" ] || fail "plugins is not set in $CONF"
 [ -n "$build_dir" ] || fail "build_dir is not set in $CONF"
 
+# --- Get enabled profiles ---
+profiles=$(get_enabled_profiles)
+[ -n "$profiles" ] || fail "No enabled profiles found in $CONF (set enable = true in a [section])"
+
+# --- Build the armcave CLI ---
 need_tool cmake
 need_tool clang
 need_tool clang++
@@ -54,7 +85,27 @@ if [ ! -x "$cli" ] && [ -x "$build_dir/Release/armcave" ]; then
 fi
 [ -x "$cli" ] || fail "built CLI not found under $build_dir"
 
-set -- "$cli" "$input" -o "$output" --plugins "$plugins"
-[ -z "$wl" ] || set -- "$@" --plugin-whitelist "$wl"
-[ -z "$bl" ] || set -- "$@" --plugin-blacklist "$bl"
-exec "$@"
+# --- Run each enabled profile ---
+for profile in $profiles; do
+    input=$(conf_value "$profile" input)
+    output=$(conf_value "$profile" output)
+    wl=$(conf_value "$profile" plugin_whitelist)
+    bl=$(conf_value "$profile" plugin_blacklist)
+
+    [ -n "$input" ] || fail "input is not set in [$profile] section of $CONF"
+    [ -n "$output" ] || fail "output is not set in [$profile] section of $CONF"
+
+    echo "=== ArmCaveHook: [$profile] ==="
+    echo "  input:   $input"
+    echo "  output:  $output"
+    echo "  plugins: $plugins"
+
+    set -- "$cli" "$input" -o "$output" --plugins "$plugins"
+    [ -z "$wl" ] || set -- "$@" --plugin-whitelist "$wl"
+    [ -z "$bl" ] || set -- "$@" --plugin-blacklist "$bl"
+
+    "$@"
+    echo ""
+done
+
+echo "All profiles completed."
