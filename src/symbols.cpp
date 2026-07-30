@@ -148,7 +148,13 @@ static void patch_page21(std::vector<uint8_t> &data, int off, int pc, int target
 static void patch_pageoff12(std::vector<uint8_t> &data, int off, int target) {
     uint32_t insn;
     memcpy(&insn, data.data() + off, 4);
-    insn = (insn & 0xFFC003FF) | ((target & 0xFFF) << 10);
+    int scale = 1;
+    // ADD/SUB immediate: (insn & 0x1F800000) == 0x11000000 -> scale = 1
+    // LDR/STR unsigned immediate: (insn & 0x3B000000) == 0x39000000 -> scale = 1 << size
+    if ((insn & 0x3B000000) == 0x39000000)
+        scale = 1 << ((insn >> 30) & 3);
+    int imm = (target & 0xFFF) / scale;
+    insn = (insn & 0xFFC003FF) | (imm << 10);
     memcpy(data.data() + off, &insn, 4);
 }
 
@@ -203,6 +209,7 @@ resolve_plugin_relocs(
         auto &name = r.symbol_name;
         uint64_t val = r.symbol_value;
         auto &section = r.symbol_section;
+        int64_t addend = r.addend;
 
         if (t == 2 && !name.empty()) {
             int dst = 0;
@@ -224,12 +231,13 @@ resolve_plugin_relocs(
             } else if (!section.empty()) {
                 int target;
                 if (section == "__text")
-                    target = (int)(text_va + val);
+                    target = (int)((int64_t)text_va + (int64_t)val + addend);
                 else {
                     auto it = offsets.find(section);
                     if (it == offsets.end())
                         throw std::runtime_error("unknown section: " + section);
-                    target = (int)(data_va + it->second + val);
+                    target = (int)((int64_t)data_va + it->second +
+                                   (int64_t)val + addend);
                 }
                 patch_page21(text_buf, off, (int)(text_va + off), target);
             }
@@ -242,12 +250,13 @@ resolve_plugin_relocs(
             } else if (!section.empty()) {
                 int target;
                 if (section == "__text")
-                    target = (int)(text_va + val);
+                    target = (int)((int64_t)text_va + (int64_t)val + addend);
                 else {
                     auto it = offsets.find(section);
                     if (it == offsets.end())
                         throw std::runtime_error("unknown section: " + section);
-                    target = (int)(data_va + it->second + val);
+                    target = (int)((int64_t)data_va + it->second +
+                                   (int64_t)val + addend);
                 }
                 patch_pageoff12(text_buf, off, target);
             }

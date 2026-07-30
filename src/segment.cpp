@@ -68,13 +68,22 @@ uint64_t seg_va(BinaryImage &binary, const std::string &name, int size) {
 void add_segment(const std::filesystem::path &binary_path,
                  const SegmentPlan &plan,
                  const std::filesystem::path &output_path) {
+    add_segments(binary_path, {plan}, output_path);
+}
+
+void add_segments(const std::filesystem::path &binary_path,
+                  const std::vector<SegmentPlan> &plans,
+                  const std::filesystem::path &output_path) {
     auto binary = BinaryImage::parse(binary_path);
     if (!binary)
         throw std::runtime_error("failed to parse " + binary_path.string());
-    int size = plan.size;
-    auto content = plan.content;
-    content.resize(size, 0);
-    binary->add_executable_section(seg_name(*binary, plan.name), size, content);
+    for (const auto &plan : plans) {
+        int size = plan.size;
+        auto content = plan.content;
+        content.resize(size, 0);
+        binary->add_executable_section(seg_name(*binary, plan.name), size,
+                                       content, plan.writable);
+    }
     binary->write(output_path);
 }
 

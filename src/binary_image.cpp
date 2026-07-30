@@ -100,6 +100,7 @@ bool BinarySymbol::undefined() const {
 }
 
 std::vector<uint8_t> BinarySection::content(const std::vector<uint8_t> &image) const {
+    if (zero_fill) return std::vector<uint8_t>((size_t)size, 0);
     if (offset >= image.size()) return {};
     size_t length = (size_t)std::min<uint64_t>(size, image.size() - offset);
     return std::vector<uint8_t>(image.begin() + offset, image.begin() + offset + length);
@@ -205,6 +206,10 @@ bool BinaryImage::parse_macho() {
                 uint32_t relocation_count = read_le<uint32_t>(data_, section_offset + 60);
                 section.reserved1 = read_le<uint32_t>(data_, section_offset + 68);
                 section.reserved2 = read_le<uint32_t>(data_, section_offset + 72);
+                uint32_t flags = read_le<uint32_t>(data_, section_offset + 64);
+                uint32_t section_type = flags & 0xff;
+                section.zero_fill = section_type == 0x1 || section_type == 0xc ||
+                                    section_type == 0x12;
                 section.header_offset = section_offset;
                 if (relocation_count > 1000000 ||
                     relocation_offset + (uint64_t)relocation_count * 8 > data_.size())
@@ -329,6 +334,7 @@ bool BinaryImage::parse_elf() {
         section.virtual_address = read_le<uint64_t>(data_, offset + 16);
         section.offset = read_le<uint64_t>(data_, offset + 24);
         section.size = read_le<uint64_t>(data_, offset + 32);
+        section.zero_fill = read_le<uint32_t>(data_, offset + 4) == 8;
         section.alignment = (uint32_t)read_le<uint64_t>(data_, offset + 48);
         section.header_offset = offset;
         sections_.push_back(std::move(section));
@@ -543,15 +549,16 @@ std::optional<uint64_t> BinaryImage::import_stub(const std::string &name) const 
 }
 
 void BinaryImage::add_executable_section(const std::string &name, int size,
-                                         const std::vector<uint8_t> &content) {
+                                         const std::vector<uint8_t> &content,
+                                         bool writable) {
     if (size < 0 || content.size() > (size_t)size)
         throw std::runtime_error("invalid executable section size");
     if (auto *existing = section(name)) {
         update_existing_section(*existing, size, content);
         return;
     }
-    if (is_macho()) add_macho_section(name, size, content);
-    else add_elf_section(name, size, content);
+    if (is_macho()) add_macho_section(name, size, content, writable);
+    else add_elf_section(name, size, content, writable);
 }
 
 void BinaryImage::update_existing_section(BinarySection &item, int size,
@@ -565,7 +572,9 @@ void BinaryImage::update_existing_section(BinarySection &item, int size,
 }
 
 void BinaryImage::add_macho_section(const std::string &name, int size,
-                                    const std::vector<uint8_t> &content) {
+                                    const std::vector<uint8_t> &content,
+                                    bool writable) {
+    (void)writable;  // Mach-O segments are always RWX-capable; protection is per-page
     constexpr uint32_t LC_SEGMENT_64 = 0x19;
     constexpr uint32_t LC_CODE_SIGNATURE = 0x1d;
     constexpr size_t command_size = 72 + 80;
@@ -735,7 +744,8 @@ void BinaryImage::add_macho_section(const std::string &name, int size,
 }
 
 void BinaryImage::add_elf_section(const std::string &name, int size,
-                                  const std::vector<uint8_t> &content) {
+                                  const std::vector<uint8_t> &content,
+                                  bool writable) {
     uint64_t old_phoff = read_le<uint64_t>(data_, 32);
     uint64_t old_shoff = read_le<uint64_t>(data_, 40);
     uint16_t phentsize = read_le<uint16_t>(data_, 54);
@@ -749,6 +759,8 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
     if (phnum == std::numeric_limits<uint16_t>::max())
         throw std::runtime_error("ELF table is full");
 
+    const uint32_t p_flags = writable ? 6 : 5;  // RW- or R-X
+    const uint64_t sh_flags = writable ? 0x3 : 0x6;  // WA or AX
     uint64_t page_size = 0x1000;
     uint64_t next_va = 0;
     for (const auto &segment : segments_) {
@@ -793,7 +805,7 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
         }
         size_t new_phdr = load_offset + (size_t)phnum * phentsize;
         write_le<uint32_t>(data_, new_phdr, 1);
-        write_le<uint32_t>(data_, new_phdr + 4, 5);
+        write_le<uint32_t>(data_, new_phdr + 4, p_flags);
         write_le<uint64_t>(data_, new_phdr + 8, load_offset);
         write_le<uint64_t>(data_, new_phdr + 16, next_va);
         write_le<uint64_t>(data_, new_phdr + 24, next_va);
@@ -805,7 +817,7 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
         size_t content_shdr = section_table_offset + 64;
         write_le<uint32_t>(data_, content_shdr, name_offset);
         write_le<uint32_t>(data_, content_shdr + 4, 1);
-        write_le<uint64_t>(data_, content_shdr + 8, 0x6);
+        write_le<uint64_t>(data_, content_shdr + 8, sh_flags);
         write_le<uint64_t>(data_, content_shdr + 16, content_va);
         write_le<uint64_t>(data_, content_shdr + 24, content_offset);
         write_le<uint64_t>(data_, content_shdr + 32, (uint64_t)size);
@@ -865,7 +877,7 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
     }
     size_t new_phdr = load_offset + (size_t)phnum * phentsize;
     write_le<uint32_t>(data_, new_phdr, 1);
-    write_le<uint32_t>(data_, new_phdr + 4, 5);
+    write_le<uint32_t>(data_, new_phdr + 4, p_flags);
     write_le<uint64_t>(data_, new_phdr + 8, load_offset);
     write_le<uint64_t>(data_, new_phdr + 16, next_va);
     write_le<uint64_t>(data_, new_phdr + 24, next_va);
@@ -884,7 +896,7 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
     size_t new_section = section_table_offset + (size_t)shnum * shentsize;
     write_le<uint32_t>(data_, new_section, name_offset);
     write_le<uint32_t>(data_, new_section + 4, 1);
-    write_le<uint64_t>(data_, new_section + 8, 0x6);
+    write_le<uint64_t>(data_, new_section + 8, sh_flags);
     write_le<uint64_t>(data_, new_section + 16, content_va);
     write_le<uint64_t>(data_, new_section + 24, content_offset);
     write_le<uint64_t>(data_, new_section + 32, (uint64_t)size);

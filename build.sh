@@ -61,10 +61,8 @@ get_enabled_profiles() {
 }
 
 # --- Parse global values ---
-plugins=$(conf_value "" plugins)
 build_dir=$(conf_value "" build_dir)
 
-[ -n "$plugins" ] || fail "plugins is not set in $CONF"
 [ -n "$build_dir" ] || fail "build_dir is not set in $CONF"
 
 # --- Get enabled profiles ---
@@ -89,11 +87,13 @@ fi
 for profile in $profiles; do
     input=$(conf_value "$profile" input)
     output=$(conf_value "$profile" output)
+    plugins=$(conf_value "$profile" plugins)
     wl=$(conf_value "$profile" plugin_whitelist)
     bl=$(conf_value "$profile" plugin_blacklist)
 
     [ -n "$input" ] || fail "input is not set in [$profile] section of $CONF"
     [ -n "$output" ] || fail "output is not set in [$profile] section of $CONF"
+    [ -n "$plugins" ] || fail "plugins is not set in [$profile] section of $CONF"
 
     echo "=== ArmCaveHook: [$profile] ==="
     echo "  input:   $input"

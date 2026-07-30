@@ -176,6 +176,12 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         uint64_t segment_va = 0;
         int segment_file_offset = 0;
         std::vector<uint8_t> content;
+        // Data segment (RW-) for plugin's static/global data
+        std::string data_segment_name;
+        int data_segment_size = 0;
+        uint64_t data_segment_va = 0;
+        int data_segment_file_offset = 0;
+        std::vector<uint8_t> data_content;
     };
     std::vector<Compiled> compiled;
     for (auto &spec : plugins) {
@@ -268,6 +274,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     prepare_sites(replace_sites);
 
     std::set<std::string> used_segments;
+    std::vector<SegmentPlan> segment_plans;
     for (auto &cp : compiled) {
         if (!cp.has_hooks) continue;
         std::string prefix = cp.requested_segment.empty()
@@ -303,9 +310,19 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         }
         cursor = (cursor + 15) & ~15;
         cp.code_offset = cursor;
-        cursor += cp.blob.total_bytes();
+        // Code segment only contains text (not extra data)
+        int text_aligned = ((int)cp.blob.text.size() + 15) & ~15;
+        cursor += text_aligned;
         cp.segment_size = std::max(cursor, 4);
         cp.content.resize(cp.segment_size, 0);
+        // Data segment contains extra (static/global data) if present
+        if (!cp.blob.extra.empty()) {
+            cp.data_segment_name = cp.segment_name + "_data";
+            cp.data_segment_size = (int)cp.blob.extra.size();
+            // Align to 16 for safe ADRP/LDR access
+            cp.data_segment_size = (cp.data_segment_size + 15) & ~15;
+            cp.data_content.resize(cp.data_segment_size, 0);
+        }
     }
 
     for (auto &cp : compiled) {
@@ -314,14 +331,30 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         plan.name = cp.segment_name;
         plan.size = cp.segment_size;
         plan.content.resize(cp.segment_size, 0);
-        add_segment(output_path, plan, output_path);
+        plan.writable = false;  // R-X
+        segment_plans.push_back(std::move(plan));
+        // Create separate RW- data segment if plugin has static data
+        if (!cp.blob.extra.empty()) {
+            SegmentPlan dplan;
+            dplan.name = cp.data_segment_name;
+            dplan.size = cp.data_segment_size;
+            dplan.content.resize(cp.data_segment_size, 0);
+            dplan.writable = true;  // RW-
+            segment_plans.push_back(std::move(dplan));
+        }
     }
+    if (!segment_plans.empty())
+        add_segments(output_path, segment_plans, output_path);
 
     auto &layout = parse_binary(output_path);
     for (auto &cp : compiled) {
         if (!cp.has_hooks) continue;
         cp.segment_va = seg_va(layout, cp.segment_name, cp.segment_size);
         cp.segment_file_offset = segment_file_offset(layout, cp.segment_name);
+        if (!cp.blob.extra.empty()) {
+            cp.data_segment_va = seg_va(layout, cp.data_segment_name, cp.data_segment_size);
+            cp.data_segment_file_offset = segment_file_offset(layout, cp.data_segment_name);
+        }
     }
 
     auto place = [](std::vector<uint8_t> &target, int offset,
@@ -334,9 +367,25 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     for (auto &cp : compiled) {
         if (!cp.has_hooks) continue;
         uint64_t code_va = cp.segment_va + cp.code_offset;
-        uint64_t data_va = code_va + (((int)cp.blob.text.size() + 15) & ~15);
-        auto code = cp.blob.build(code_va, data_va, &output_path);
-        place(cp.content, cp.code_offset, code);
+        // data_va points to the separate RW- data segment (or fallback to
+        // code_va + aligned_text if no extra, which shouldn't happen for
+        // plugins with static data but keeps the old behavior safe)
+        uint64_t data_va = cp.blob.extra.empty()
+            ? (code_va + (((int)cp.blob.text.size() + 15) & ~15))
+            : cp.data_segment_va;
+        auto built = cp.blob.build(code_va, data_va, &output_path);
+        // build() returns text + padding + extra concatenated; split them
+        int text_aligned = ((int)cp.blob.text.size() + 15) & ~15;
+        // Place text (code) into the R-X segment
+        place(cp.content, cp.code_offset,
+              std::vector<uint8_t>(built.begin(),
+                                   built.begin() + std::min((int)cp.blob.text.size(), (int)built.size())));
+        // Place extra (data) into the RW- segment if present
+        if (!cp.blob.extra.empty() && (int)built.size() > text_aligned) {
+            auto data_start = built.begin() + text_aligned;
+            auto data_end = built.end();
+            std::copy(data_start, data_end, cp.data_content.begin());
+        }
 
         for (auto &[action, offset] : wrapper_offsets[&cp]) {
             int entry = cp.blob.for_action(*action).entry_offset;
@@ -372,8 +421,16 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     for (auto &cp : compiled) {
         if (!cp.has_hooks) continue;
         write_at_offset(output_path, cp.segment_file_offset, cp.content, cp.segment_size);
-        printf("[plugin] %s segment=%s size=%d\n", cp.spec->name.c_str(),
-               cp.segment_name.c_str(), cp.segment_size);
+        if (!cp.blob.extra.empty()) {
+            write_at_offset(output_path, cp.data_segment_file_offset,
+                            cp.data_content, cp.data_segment_size);
+            printf("[plugin] %s segment=%s size=%d (data segment=%s size=%d)\n",
+                   cp.spec->name.c_str(), cp.segment_name.c_str(), cp.segment_size,
+                   cp.data_segment_name.c_str(), cp.data_segment_size);
+        } else {
+            printf("[plugin] %s segment=%s size=%d\n", cp.spec->name.c_str(),
+                   cp.segment_name.c_str(), cp.segment_size);
+        }
     }
 
     auto patch_sites = [&](auto &sites) {

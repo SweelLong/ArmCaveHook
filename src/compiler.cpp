@@ -305,13 +305,30 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     while (extra.size() % 16 != 0) extra.push_back(0);
     blob.extra = extra;
 
+    bool has_addend = false;
+    int64_t pending_addend = 0;
+    uint64_t pending_address = 0;
     for (auto &reloc : text_sec->relocations) {
-        RelocEntry r;
-        r.type = reloc.type;
         uint64_t address = reloc.address;
         if (address >= text_sec->size)
             throw std::runtime_error("text relocation is outside __text");
+        if (reloc.type == 10) {  // ARM64_RELOC_ADDEND
+            int32_t raw = (int32_t)(reloc.symbol_index & 0x00ffffff);
+            if (raw & 0x00800000) raw |= (int32_t)0xff000000;
+            pending_addend = raw;
+            pending_address = address;
+            has_addend = true;
+            continue;
+        }
+        RelocEntry r;
+        r.type = reloc.type;
         r.address = (int)address;
+        if (has_addend) {
+            if (pending_address != address)
+                throw std::runtime_error("ARM64_RELOC_ADDEND is not paired");
+            r.addend = pending_addend;
+            has_addend = false;
+        }
         const BinarySymbol *sym = reloc.external ? mo.bin->symbol(reloc.symbol_index) : nullptr;
         if (sym) {
             r.symbol_name = sym->name;
@@ -334,6 +351,8 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         }
         blob.relocs.push_back(r);
     }
+    if (has_addend)
+        throw std::runtime_error("orphan ARM64_RELOC_ADDEND");
 
     auto *meta_sec = mo.section("__armhook");
     if (meta_sec)

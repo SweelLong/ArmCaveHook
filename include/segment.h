@@ -10,6 +10,7 @@ struct SegmentPlan
     std::string name;
     int size = 0;
     std::vector<uint8_t> content;
+    bool writable = false;
 };
 
 std::vector<uint8_t> read_file(const std::filesystem::path &path);
@@ -24,6 +25,10 @@ uint64_t seg_va(BinaryImage &binary, const std::string &name, int size);
 void add_segment(const std::filesystem::path &binary_path,
                  const SegmentPlan &plan,
                  const std::filesystem::path &output_path);
+
+void add_segments(const std::filesystem::path &binary_path,
+                  const std::vector<SegmentPlan> &plans,
+                  const std::filesystem::path &output_path);
 
 void write_at_offset(const std::filesystem::path &path, int offset,
                      const std::vector<uint8_t> &payload, int size);

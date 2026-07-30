@@ -25,7 +25,8 @@ cd ArmCaveHook
 ```
 
 Plugins and binaries are managed by the [`ArmCaveHook-Arcplugins`](https://github.com/SweelLong/ArmCaveHook-Arcplugins) submodule.
-You can create your own plugin repository by modifying `input`, `output`, and `plugins` in `armcave.conf`.
+You can create your own plugin repository and configure separate `input`, `output`, and
+`plugins` paths in each platform profile in `armcave.conf`.
 
 ## Plugin Specification
 
@@ -52,7 +53,19 @@ void init(void) {
 }
 ```
 
-`SEGMENT_NAME` is the plugin segment name. Mach-O uses `__testhook`, while ELF uses `.testhook`. Each plugin creates exactly one segment. The framework first totals the space required by all hook_replace dispatchers, register wrappers, compiled code, constant data, and relocations, then creates the final-sized segment. Plugin code and constants are stored once and shared by all `hook_replace`/`hook_detour` actions.
+`SEGMENT_NAME` is the plugin code-segment name. Mach-O uses `__testhook`, while ELF uses
+`.testhook`. The framework totals the space required by dispatchers, register wrappers,
+compiled code, and relocations before creating the code segment. If the plugin has static or
+global data, it creates a separate `<segment>_data` segment. ELF code segments are R-X and data
+segments are RW-, so mutable state is not placed in executable memory. Plugin code and constants
+are stored once and shared by all `hook_replace`/`hook_detour` actions.
+
+New handlers, dispatchers, wrappers, and plugin functions are written to the custom code segment;
+static/global variables and BSS/zerofill data are written to the custom data segment.
+`hook_replace`/`hook_detour` overwrite only one 4-byte instruction at each original hook site to
+branch into the custom segment. Only an explicit `patch_asm` directly replaces other original
+instructions. All plugin segments are added in one batch and the binary is written once, avoiding
+a full parse and rewrite for every code or data segment.
 
 ## Standard API
 
@@ -73,7 +86,7 @@ void init(void) {
 | `armcave_apple_string_make(text)` | Build an Apple 24-byte short-string argument. |
 | `armcave_apple_string_data(value)` | Get the actual character address from an Apple string. |
 | `armcave_apple_file_manager_get(manager, path)` | Call the Apple file manager resource-reading method. |
-| `logf(fmt, ...)` | Simple logging output; trailing arguments correspond to the format string, such as `logf("value=%d", value)`. |
+| `logf(fmt, ...)` | Simple logging output. Apple writes to the system console; Android writes to logcat with the `ArmCave` tag and does not create local log files. |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | Basic type aliases. |
 
 When hook registers are provided, the framework generates a wrapper that moves them to the standard AArch64 calling convention argument registers.
@@ -98,7 +111,11 @@ void init(void) {
 }
 ```
 
-`patch_asm` writes AArch64 assembly text. Use the form with `expected` when the patch should be guarded against version changes.
+`patch_asm` writes AArch64 assembly text. Use the form with `expected` when the patch should be
+guarded against version changes. For example,
+`patch_asm(addr, "nop", ".long 0x34000428")` writes only the `nop`; `.long` expresses the original
+32-bit machine word as exact expected bytes, preventing a patch when the offset or binary version
+does not match. The patch and expected sequences must cover the same number of bytes.
 
 Default jumps use the AArch64 `B` instruction. `B` is a 26-bit relative jump, aligned to 4-byte instruction boundaries, with a range of 128 MiB forward and backward from the current position. The Mach-O hook cave entry executes `XPACLRI` before saving `x29/x30` to clear PAC-signed return addresses, preventing `hook_replace` from jumping to a non-canonical signed address on `RET`. The framework does not automatically generate `BR` far jumps; it reports an error if the target is out of `B/BL` range.
 
@@ -131,14 +148,31 @@ static int call_internal(int a, int b) {
 }
 ```
 
-Use `resolve_addr` to access fixed data addresses (global variables, typeinfo, etc.). It generates an ADRP+PAGEOFF12 relocation, resolved to an absolute VMA during patching, and accessed PC-relatively at runtime, inherently ASLR-resistant:
+Use `resolve_addr` to access fixed data addresses in the target binary (global variables,
+typeinfo, etc.). It generates an ADRP+PAGEOFF12 relocation, resolved to an absolute VMA during
+patching and accessed PC-relatively at runtime, making it inherently ASLR-resistant:
 
 ```cpp
-#define kAutoplayState 0x1014ED000
+#define kTargetManager 0x1014ED000
 
-static AutoplayState *state() {
-    return (AutoplayState *)resolve_addr(kAutoplayState);
+static TargetManager *target_manager() {
+    return (TargetManager *)resolve_addr(kTargetManager);
 }
+```
+
+Do not place plugin-owned state at an apparently unused `.bss` address in the target binary; that
+memory still belongs to the target and may be overwritten at runtime. Declare static or global
+variables normally. The framework places initialized data and BSS/zerofill in the plugin data
+segment and resolves compiler-generated `ARM64_RELOC_ADDEND` plus PAGE21/PAGEOFF12 relocation
+pairs:
+
+```cpp
+struct PluginState {
+    bool initialized;
+    int last_timestamp;
+};
+
+static PluginState g_state = {false, -1};
 ```
 
 ## C++ Usage Scope
@@ -152,15 +186,32 @@ The command-line tool is built with C++17 and CMake 3.24+. Mach-O/ELF parsing an
 Edit `armcave.conf` in the project root:
 
 ```text
-input = binaries/bin
-output = binaries/bin.patched
-plugins = plugins
 build_dir = build
+
+[android]
+enable = true
+input = ArmCaveHook-Arcplugins/binaries/libcocos2dcpp.so-original
+output = ArmCaveHook-Arcplugins/binaries/libcocos2dcpp.so
+plugins = ArmCaveHook-Arcplugins/plugins/android
+# plugin_whitelist = arc_autoplay.cpp
+# plugin_blacklist = arc_test.cpp
+
+[apple]
+enable = false
+input = ArmCaveHook-Arcplugins/binaries/Arc-mobile.mac-catalyst
+output = ArmCaveHook-Arcplugins/binaries/Arc-mobile.patched
+plugins = ArmCaveHook-Arcplugins/plugins/apple
 # plugin_whitelist = arc_autoplay.cpp
 # plugin_blacklist = arc_test.cpp
 ```
 
-The build scripts read only `armcave.conf` from the project root. They do not accept command-line arguments or environment-variable overrides. `input`, `output`, `plugins`, and `build_dir` are required; the plugin whitelist and blacklist may be omitted.
+`build_dir` is global. Every enabled profile must define `input`, `output`, and `plugins`, and the
+scripts process every profile with `enable = true`. Only `.cpp` files directly inside each plugin
+directory are enumerated, so platform plugins should be separated into directories such as
+`plugins/android` and `plugins/apple`. `plugin_whitelist` and `plugin_blacklist` are optional;
+leave them commented to load every plugin in that directory. The scripts do not accept positional
+arguments. `build.sh` supports `CONF=/path/to/file ./build.sh`; `build.bat` reads `armcave.conf`
+from the project root.
 
 Then use the build script for your platform:
 
@@ -169,7 +220,8 @@ Then use the build script for your platform:
 | `build.sh` | Linux / macOS |
 | `build.bat` | Windows |
 
-The scripts configure and build `armcave` under `build_dir`, then run the patch using the same configuration.
+The scripts configure and build `armcave` once under `build_dir`, then patch each enabled profile
+using its independent input, output, and plugin directory.
 
 ### macOS
 
@@ -208,7 +260,7 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passi
 - [ ] Replace the in-house binary parser: evaluate and migrate to a LIEF or LLVM backend for packed binaries, compressed SHT data, and unusual segment layouts without aborting on parser failures.
 - [ ] Implement far-jump trampolines: emit an indirect absolute jump when an AArch64 `B/BL` target is outside the plus or minus 128 MiB range.
 - [x] Isolate symbols across plugins: plugins are compiled independently and use separate segment names and symbol maps, allowing duplicate `replacement` / `init` names.
-- [x] Harden cross-platform build scripts: detect CMake, Clang/LLVM, and MSVC, and consistently read build and patch settings from `armcave.conf`.
+- [x] Harden cross-platform build scripts: detect CMake, Clang/LLVM, and MSVC, and read multiple platform profiles with independent plugin directories from `armcave.conf`.
 - [ ] Add reproducible performance benchmarks for Hook overhead and comparisons with Frida Stalker, Dobby, and E9Patch.
 - [ ] Improve diagnostics with structured failure reasons, addresses, relocation types, and context instead of generic `SKIP` / `errors` messages.
 - [ ] Remove fixed-VMA version coupling using dynamic symbols, PLT/GOT, byte signatures, call-graph anchors, and user rules to relocate automatically after target upgrades.

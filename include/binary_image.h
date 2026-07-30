@@ -49,6 +49,7 @@ struct BinarySection {
 
 private:
     size_t header_offset = 0;
+    bool zero_fill = false;
     friend class BinaryImage;
 };
 
@@ -96,7 +97,8 @@ public:
     std::optional<uint64_t> import_stub(const std::string &name) const;
 
     void add_executable_section(const std::string &name, int size,
-                                const std::vector<uint8_t> &content);
+                                const std::vector<uint8_t> &content,
+                                bool writable = false);
     void write(const std::filesystem::path &path) const;
 
 private:
@@ -115,9 +117,11 @@ private:
                             uint32_t indirectoff, uint32_t nindirect);
     void parse_elf_dynamic(uint64_t dynamic_offset, uint64_t dynamic_size);
     void add_macho_section(const std::string &name, int size,
-                           const std::vector<uint8_t> &content);
+                           const std::vector<uint8_t> &content,
+                           bool writable);
     void add_elf_section(const std::string &name, int size,
-                         const std::vector<uint8_t> &content);
+                         const std::vector<uint8_t> &content,
+                         bool writable);
     void update_existing_section(BinarySection &section, int size,
                                  const std::vector<uint8_t> &content);
     std::vector<uint8_t> serialized() const;

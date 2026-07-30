@@ -38,18 +38,28 @@ static inline armcave_apple_string armcave_apple_file_manager_get(void *manager,
     return method(manager, path);
 }
 
+#ifdef ARMCAVE_ELF
+extern "C" int armcave_android_log_print(int priority, const char *tag,
+                                           const char *format)
+    asm("__android_log_print");
+#endif
+
 __attribute__((always_inline))
 static inline void armcave_sys_write(const char *p, int len) {
 #ifdef ARMCAVE_ELF
-    asm volatile(
-        "mov x8, #64\n"
-        "mov x0, #1\n"
-        "mov x1, %[buf]\n"
-        "mov x2, %[len]\n"
-        "svc #0"
-        :
-        : [buf] "r"((long)p), [len] "r"((long)len)
-        : "x0", "x1", "x2", "x8", "memory", "cc");
+    // libcocos2dcpp.so already imports this symbol from liblog, so the plugin
+    // can call its existing PLT entry without adding a new ELF dependency.
+    // Do not pass variadic arguments here: plugins are compiled with Darwin's
+    // AArch64 ABI, whose variadic calling convention differs from Android's.
+    char escaped[512];
+    int out = 0;
+    for (int i = 0; i < len && out < (int)sizeof(escaped) - 1; ++i) {
+        if (p[i] == '%' && out < (int)sizeof(escaped) - 2)
+            escaped[out++] = '%';
+        escaped[out++] = p[i];
+    }
+    escaped[out] = '\0';
+    armcave_android_log_print(4, "ArmCave", escaped);
 #else
     asm volatile(
         "mov x16, #4\n"

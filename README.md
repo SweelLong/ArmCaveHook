@@ -25,7 +25,8 @@ cd ArmCaveHook
 ```
 
 插件和二进制文件由子模块 [`ArmCaveHook-Arcplugins`](https://github.com/SweelLong/ArmCaveHook-Arcplugins) 管理。
-你也可以创建自己的插件仓库，只需在 `armcave.conf` 中修改 `input`、`output`、`plugins` 路径即可。
+你也可以创建自己的插件仓库，并在 `armcave.conf` 的各个平台 profile 中分别配置
+`input`、`output` 和 `plugins` 路径。
 
 ## 插件规范
 
@@ -52,7 +53,17 @@ void init(void) {
 }
 ```
 
-`SEGMENT_NAME` 是插件段名。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。每个插件只生成一个 segment；框架会先汇总该插件全部 hook_replace dispatcher、寄存器 wrapper、编译后代码、常量数据和重定位所需空间，再创建最终大小的 segment。插件代码和常量只存放一份，多个 `hook_replace`/`hook_detour` 共用它们。
+`SEGMENT_NAME` 是插件代码段名。Mach-O 使用 `__testhook`，ELF 使用 `.testhook`。
+框架先汇总该插件全部 dispatcher、寄存器 wrapper、编译后代码和重定位空间，再创建
+代码段；插件存在静态或全局数据时，另建 `<segment>_data` 数据段。ELF 中代码段为
+R-X、数据段为 RW-，避免把可变状态写入可执行段。插件代码和常量只存放一份，多个
+`hook_replace`/`hook_detour` 共用它们。
+
+新增的 handler、dispatcher、wrapper 和插件函数都写入自定义代码段，静态/全局变量
+及 BSS/zerofill 数据写入自定义数据段。`hook_replace`/`hook_detour` 只在原二进制的
+hook 点覆盖一条 4 字节指令，使其跳转到自定义段；只有显式 `patch_asm` 才会直接改写
+指定的原始指令。所有插件所需段会一次性加入并统一写回二进制，避免每增加一个代码段
+或数据段都重新解析、重写整个文件。
 
 ## 标准 API
 
@@ -73,7 +84,7 @@ void init(void) {
 | `armcave_apple_string_make(text)` | 构造 Apple 24 字节短字符串参数。 |
 | `armcave_apple_string_data(value)` | 读取 Apple 字符串的实际字符地址。 |
 | `armcave_apple_file_manager_get(manager, path)` | 调用 Apple file manager 的资源读取方法。 |
-| `logf(fmt, ...)` | 简单日志输出；末尾参数对应格式字符串，例如 `logf("value=%d", value)`。 |
+| `logf(fmt, ...)` | 简单日志输出；Apple 写入系统控制台，Android 使用标签 `ArmCave` 写入 logcat，不创建本地日志文件。 |
 | `u8/u16/u32/u64/i8/i16/i32/i64/addr_t` | 基础类型别名。 |
 
 传入 hook 寄存器后，框架会生成 wrapper，把这些寄存器移动到标准 AArch64 调用参数寄存器。
@@ -99,6 +110,9 @@ void init(void) {
 ```
 
 `patch_asm` 用来写 AArch64 汇编文本；需要保护版本差异时，使用带 `expected` 的形式。
+例如 `patch_asm(addr, "nop", ".long 0x34000428")` 实际写入的是 `nop`；`.long` 只是把
+反汇编得到的原始 32-bit 机器码精确表示为 expected bytes，用于阻止偏移或版本不匹配时
+误打补丁。patch 与 expected 必须覆盖相同字节数。
 
 默认跳转使用 AArch64 `B` 指令。`B` 是 26-bit 相对跳转，按 4 字节指令对齐计算，范围是当前位置前后 128 MiB。Mach-O hook cave 入口会先执行 `XPACLRI` 再保存 `x29/x30`，用于清理带 PAC 签名位的返回地址，避免 `hook_replace` 在 `RET` 时跳到签名后的非规范地址。框架不会自动生成 `BR` 远跳；目标超出 `B/BL` 范围时会报错。
 
@@ -131,14 +145,30 @@ static int call_internal(int a, int b) {
 }
 ```
 
-访问固定数据地址（全局变量、typeinfo 等）用 `resolve_addr`。它生成 ADRP+PAGEOFF12 relocation，patch 阶段解析为绝对 VMA，运行时 PC-relative 访问，天然抗 ASLR：
+访问目标二进制中的固定数据地址（全局变量、typeinfo 等）用 `resolve_addr`。它生成
+ADRP+PAGEOFF12 relocation，patch 阶段解析为绝对 VMA，运行时 PC-relative 访问，
+天然抗 ASLR：
 
 ```cpp
-#define kAutoplayState 0x1014ED000
+#define kTargetManager 0x1014ED000
 
-static AutoplayState *state() {
-    return (AutoplayState *)resolve_addr(kAutoplayState);
+static TargetManager *target_manager() {
+    return (TargetManager *)resolve_addr(kTargetManager);
 }
+```
+
+插件自身状态不要借用目标二进制中看似空闲的 `.bss` 地址；该内存仍由目标程序所有，
+运行时可能被覆盖。直接声明静态或全局变量即可，框架会把初始化数据和 BSS/zerofill
+分配到插件自己的数据段，并处理编译器产生的 `ARM64_RELOC_ADDEND` 与
+PAGE21/PAGEOFF12 配对重定位：
+
+```cpp
+struct PluginState {
+    bool initialized;
+    int last_timestamp;
+};
+
+static PluginState g_state = {false, -1};
 ```
 
 ## C++ 使用范围
@@ -152,15 +182,31 @@ static AutoplayState *state() {
 编辑项目根目录的 `armcave.conf`：
 
 ```text
-input = binaries/bin
-output = binaries/bin.patched
-plugins = plugins
 build_dir = build
+
+[android]
+enable = true
+input = ArmCaveHook-Arcplugins/binaries/libcocos2dcpp.so-original
+output = ArmCaveHook-Arcplugins/binaries/libcocos2dcpp.so
+plugins = ArmCaveHook-Arcplugins/plugins/android
+# plugin_whitelist = arc_autoplay.cpp
+# plugin_blacklist = arc_test.cpp
+
+[apple]
+enable = false
+input = ArmCaveHook-Arcplugins/binaries/Arc-mobile.mac-catalyst
+output = ArmCaveHook-Arcplugins/binaries/Arc-mobile.patched
+plugins = ArmCaveHook-Arcplugins/plugins/apple
 # plugin_whitelist = arc_autoplay.cpp
 # plugin_blacklist = arc_test.cpp
 ```
 
-构建脚本只读取项目根目录的 `armcave.conf`，不接受命令行参数或环境变量覆盖。`input`、`output`、`plugins` 和 `build_dir` 为必填项；插件白名单和黑名单可以省略。
+`build_dir` 是全局配置。每个启用的 profile 都必须设置 `input`、`output` 和
+`plugins`；脚本会依次处理所有 `enable = true` 的 profile。插件目录只枚举当前目录
+下的 `.cpp`，因此建议按 `plugins/android`、`plugins/apple` 分开放置平台插件。
+`plugin_whitelist` 和 `plugin_blacklist` 是可选项，默认注释即可加载该目录中的全部
+插件。脚本不接受位置参数；`build.sh` 可用 `CONF=/path/to/file ./build.sh` 选择其他
+配置文件，`build.bat` 默认读取项目根目录的 `armcave.conf`。
 
 然后用对应平台的构建脚本：
 
@@ -169,7 +215,8 @@ build_dir = build
 | `build.sh` | Linux / macOS |
 | `build.bat` | Windows |
 
-脚本会根据 `build_dir` 自动配置并编译 `armcave`，然后按同一份配置执行 patch。
+脚本会根据 `build_dir` 自动配置并编译一次 `armcave`，然后按各个启用 profile 的
+独立输入、输出和插件目录依次执行 patch。
 
 ### macOS
 
@@ -208,7 +255,7 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passi
 - [ ] 替换自研二进制解析器：评估并迁移至 LIEF 或 LLVM 后端，增强对加壳、SHT 压缩和异常段结构的兼容性，避免解析失败直接中止。
 - [ ] 实现远跳转 trampoline：当 AArch64 `B/BL` 超出正负 128 MiB 范围时，自动生成间接绝对跳转序列。
 - [x] 解决多插件符号冲突：插件独立编译、使用独立段名和符号映射，支持不同插件声明同名 `replacement` / `init` 函数。
-- [x] 增强跨平台构建脚本：检测 CMake、Clang/LLVM 和 MSVC 环境，并统一从 `armcave.conf` 读取构建与 patch 配置。
+- [x] 增强跨平台构建脚本：检测 CMake、Clang/LLVM 和 MSVC 环境，并从 `armcave.conf` 读取多个平台 profile 与独立插件目录。
 - [ ] 补充性能基准测试：测量 Hook 前后延迟，并与 Frida Stalker、Dobby、E9Patch 等工具进行可复现的横向对比。
 - [ ] 增强错误日志与诊断信息：输出结构化失败原因、地址、重定位类型和上下文，替代笼统的 `SKIP` / `errors` 提示。
 - [ ] 消除固定 VMA 的版本绑定：组合动态符号、PLT/GOT、字节签名、调用图锚点和用户规则，升级目标二进制后优先自动重定位。

@@ -19,11 +19,12 @@ struct MachO {
 MachO open_macho(const std::string &path);
 
 struct RelocEntry {
-    int type;
-    int address;
+    int type = 0;
+    int address = 0;
     std::string symbol_name;
-    uint64_t symbol_value;
+    uint64_t symbol_value = 0;
     std::string symbol_section;
+    int64_t addend = 0;
 };
 
 struct PluginBlob {
