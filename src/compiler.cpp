@@ -302,6 +302,8 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         if (name == "__caveasm" && target_is_elf)
             continue;
         if (name.size() >= 2 && name[0] == '_' && name[1] == '_') {
+            if (sec.segment_name != "__TEXT")
+                blob.has_writable_extra = true;
             while (extra.size() % 8 != 0) extra.push_back(0);
             blob.section_offsets[name] = (int)extra.size();
             auto content = sec.content(mo.bin->data());

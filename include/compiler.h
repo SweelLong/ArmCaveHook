@@ -37,6 +37,7 @@ struct PluginBlob {
     std::vector<std::string> register_args;
     int entry_offset = 0;
     std::string default_segment;
+    bool has_writable_extra = false;
 
     int total_bytes() const;
     int max_text_bytes() const;

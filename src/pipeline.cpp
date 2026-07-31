@@ -366,9 +366,11 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         cp.code_offset = cursor;
         int text_aligned = ((cp.blob.max_text_bytes()) + 15) & ~15;
         cursor += text_aligned;
+        if (!cp.blob.has_writable_extra)
+            cursor += (int)cp.blob.extra.size();
         cp.segment_size = std::max(cursor, 4);
         cp.content.resize(cp.segment_size, 0);
-        if (!cp.blob.extra.empty()) {
+        if (cp.blob.has_writable_extra) {
             cp.data_segment_name = cp.segment_name + "_data";
             if (!verified_data_segments.insert(cp.data_segment_name).second)
                 throw std::runtime_error("plugin data segment is not unique: " +
@@ -387,7 +389,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         plan.content.resize(cp.segment_size, 0);
         plan.writable = false;
         segment_plans.push_back(std::move(plan));
-        if (!cp.blob.extra.empty()) {
+        if (cp.blob.has_writable_extra) {
             SegmentPlan dplan;
             dplan.name = cp.data_segment_name;
             dplan.size = cp.data_segment_size;
@@ -404,7 +406,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         if (!cp.has_hooks) continue;
         cp.segment_va = seg_va(layout, cp.segment_name, cp.segment_size);
         cp.segment_file_offset = segment_file_offset(layout, cp.segment_name);
-        if (!cp.blob.extra.empty()) {
+        if (cp.blob.has_writable_extra) {
             cp.data_segment_va = seg_va(layout, cp.data_segment_name, cp.data_segment_size);
             cp.data_segment_file_offset = segment_file_offset(layout, cp.data_segment_name);
         }
@@ -421,7 +423,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         if (!cp.has_hooks) continue;
         uint64_t code_va = cp.segment_va + cp.code_offset;
         int text_aligned = ((cp.blob.max_text_bytes()) + 15) & ~15;
-        uint64_t data_va = cp.blob.extra.empty()
+        uint64_t data_va = !cp.blob.has_writable_extra
             ? (code_va + text_aligned)
             : cp.data_segment_va;
         auto built = cp.blob.build(code_va, data_va, &output_path);
@@ -431,7 +433,11 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         if (!cp.blob.extra.empty() && (int)built.size() > text_aligned) {
             auto data_start = built.begin() + text_aligned;
             auto data_end = built.end();
-            std::copy(data_start, data_end, cp.data_content.begin());
+            std::vector<uint8_t> extra(data_start, data_end);
+            if (cp.blob.has_writable_extra)
+                std::copy(extra.begin(), extra.end(), cp.data_content.begin());
+            else
+                place(cp.content, cp.code_offset + text_aligned, extra);
         }
 
         for (auto &[action, offset] : wrapper_offsets[&cp]) {
@@ -473,7 +479,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     for (auto &cp : compiled) {
         if (!cp.has_hooks) continue;
         write_at_offset(output_path, cp.segment_file_offset, cp.content, cp.segment_size);
-        if (!cp.blob.extra.empty()) {
+        if (cp.blob.has_writable_extra) {
             write_at_offset(output_path, cp.data_segment_file_offset,
                             cp.data_content, cp.data_segment_size);
             printf("[plugin] %s segment=%s size=%d (data segment=%s size=%d)\n",

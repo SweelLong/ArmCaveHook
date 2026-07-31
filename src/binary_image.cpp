@@ -894,7 +894,6 @@ void BinaryImage::update_existing_section(BinarySection &item, int size,
 void BinaryImage::add_macho_section(const std::string &name, int size,
                                     const std::vector<uint8_t> &content,
                                     bool writable) {
-    (void)writable;
     constexpr uint32_t LC_SEGMENT_64 = 0x19;
     constexpr uint32_t LC_CODE_SIGNATURE = 0x1d;
     constexpr size_t command_size = 72 + 80;
@@ -1047,8 +1046,8 @@ void BinaryImage::add_macho_section(const std::string &name, int size,
     write_le<uint64_t>(data_, command_offset + 32, (uint64_t)size);
     write_le<uint64_t>(data_, command_offset + 40, file_offset);
     write_le<uint64_t>(data_, command_offset + 48, segment_file_size);
-    write_le<uint32_t>(data_, command_offset + 56, 5);
-    write_le<uint32_t>(data_, command_offset + 60, 5);
+    write_le<uint32_t>(data_, command_offset + 56, writable ? 3 : 5);
+    write_le<uint32_t>(data_, command_offset + 60, writable ? 3 : 5);
     write_le<uint32_t>(data_, command_offset + 64, 1);
     write_le<uint32_t>(data_, command_offset + 68, 0);
 
@@ -1059,7 +1058,7 @@ void BinaryImage::add_macho_section(const std::string &name, int size,
     write_le<uint64_t>(data_, section_offset + 40, (uint64_t)size);
     write_le<uint32_t>(data_, section_offset + 48, (uint32_t)file_offset);
     write_le<uint32_t>(data_, section_offset + 52, 2);
-    write_le<uint32_t>(data_, section_offset + 64, 0x80000400);
+    write_le<uint32_t>(data_, section_offset + 64, writable ? 0 : 0x80000400);
     write_le<uint32_t>(data_, 16, ncmds + 1);
     write_le<uint32_t>(data_, 20, sizeofcmds + (uint32_t)command_size);
     update_macho_chained_fixups(inserted_segment_index);
