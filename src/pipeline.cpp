@@ -3,6 +3,11 @@
 #include "patcher.h"
 #include "plugin.h"
 #include "segment.h"
+#include "signature.h"
+#include "diagnostic.h"
+#include "apple_metadata.h"
+#include "symbols.h"
+#include "patch_script.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -12,6 +17,11 @@
 #include <memory>
 #include <array>
 #include <cstdint>
+#include <algorithm>
+#include <fstream>
+#include <chrono>
+
+static constexpr int kMaxHookWindow = 20;
 
 static std::string sha1_hex3(const std::string &input) {
     auto rol = [](uint32_t value, int bits) {
@@ -149,9 +159,11 @@ static bool matches_expected(const std::filesystem::path &output_path,
         uint32_t expected_code;
         memcpy(&current, data.data() + off, 4);
         memcpy(&expected_code, expected.data(), 4);
-        printf("[asm:skip] 0x%llx current=0x%08x expected=0x%08x (%s)\n",
-               (unsigned long long)action.address, current, expected_code,
-               action.expected.c_str());
+        char context[128];
+        snprintf(context, sizeof(context), "current=0x%08x expected=0x%08x",
+                 current, expected_code);
+        diagnostic_warning("match", "expected instruction mismatch",
+                           action.address, "asm_expected", context);
         return false;
     }
     return true;
@@ -176,7 +188,6 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         uint64_t segment_va = 0;
         int segment_file_offset = 0;
         std::vector<uint8_t> content;
-        // Data segment (RW-) for plugin's static/global data
         std::string data_segment_name;
         int data_segment_size = 0;
         uint64_t data_segment_va = 0;
@@ -205,6 +216,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         std::vector<uint8_t> original;
         Compiled *owner = nullptr;
         int control_offset = 0;
+        int hook_size = 4;
     };
 
     std::vector<HookAction *> direct;
@@ -214,7 +226,23 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     for (auto &cp : compiled) {
         for (auto &action : cp.blob.declarations) {
             uint64_t addr = action.address;
-            if (addr == 0 && !action.handler.empty())
+            if (addr == 0 && !action.objc_class.empty() && !action.selector.empty()) {
+                auto value = armcave::find_objc_method(binary,
+                                                       action.objc_class,
+                                                       action.selector);
+                if (value) addr = *value;
+            }
+            if (addr == 0 && !action.symbol.empty())
+                addr = find_function_address(&binary, action.symbol);
+            if (addr == 0 && !action.swift_name.empty()) {
+                addr = find_function_address(&binary, action.swift_name);
+            }
+            if (addr == 0 && !action.signature.empty())
+                addr = find_unique_signature(binary, action.signature);
+            bool has_locator = !action.objc_class.empty() || !action.selector.empty() ||
+                               !action.symbol.empty() || !action.swift_name.empty() ||
+                               !action.signature.empty();
+            if (addr == 0 && !has_locator && !action.handler.empty())
                 addr = read_entry(binary);
             if (addr == 0)
                 throw std::runtime_error(cp.spec->name + ": " + action.kind + " missing address");
@@ -262,8 +290,12 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     auto prepare_sites = [&](auto &sites) {
         auto &current = parse_binary(output_path);
         for (auto &[va, site] : sites) {
-            site.original = get_original(current, va, 4);
-            if (site.original.size() != 4)
+            site.original = get_original(current, va, kMaxHookWindow);
+            if (site.original.empty())
+                site.original = get_original(current, va, 12);
+            if (site.original.empty())
+                site.original = get_original(current, va, 4);
+            if (site.original.size() < 4)
                 throw std::runtime_error("cannot read hook window");
             if (site.handlers.empty())
                 throw std::runtime_error("hook site has no handlers");
@@ -272,6 +304,11 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     };
     prepare_sites(detour_sites);
     prepare_sites(replace_sites);
+
+    for (const auto &[va, site] : detour_sites)
+        if (replace_sites.count(va))
+            throw std::runtime_error("detour and replace overlap at 0x" +
+                                     std::to_string(va));
 
     std::set<std::string> used_segments;
     std::vector<SegmentPlan> segment_plans;
@@ -285,6 +322,22 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                 action.segment = cp.segment_name;
     }
 
+    std::set<std::string> verified_segments;
+    std::set<std::string> verified_data_segments;
+    for (auto &cp : compiled) {
+        if (!cp.has_hooks)
+            continue;
+        if (!verified_segments.insert(cp.segment_name).second)
+            throw std::runtime_error("plugin code segment is not unique: " +
+                                     cp.segment_name);
+        for (auto &action : cp.blob.declarations)
+        {
+            if (action.kind != "hook_replace" && action.kind != "hook_detour")
+                continue;
+            cp.blob.for_action(action);
+        }
+    }
+
     std::map<Compiled *, std::vector<HookSite *>> owned_sites;
     for (auto &[va, site] : detour_sites) owned_sites[site.owner].push_back(&site);
     for (auto &[va, site] : replace_sites) owned_sites[site.owner].push_back(&site);
@@ -296,7 +349,8 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         for (auto *site : owned_sites[&cp]) {
             cursor = (cursor + 3) & ~3;
             site->control_offset = cursor;
-            cursor += hook_dispatch_size((int)site->handlers.size(), 4,
+            cursor += hook_dispatch_size((int)site->handlers.size(),
+                                         kMaxHookWindow,
                                          site->overrides_original,
                                          target_is_macho);
         }
@@ -306,20 +360,20 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                 continue;
             cursor = (cursor + 3) & ~3;
             wrapper_offsets[&cp][&action] = cursor;
-            cursor += plugin_wrapper_size(action.register_args);
+            cursor += plugin_wrapper_max_size(action.register_args);
         }
         cursor = (cursor + 15) & ~15;
         cp.code_offset = cursor;
-        // Code segment only contains text (not extra data)
-        int text_aligned = ((int)cp.blob.text.size() + 15) & ~15;
+        int text_aligned = ((cp.blob.max_text_bytes()) + 15) & ~15;
         cursor += text_aligned;
         cp.segment_size = std::max(cursor, 4);
         cp.content.resize(cp.segment_size, 0);
-        // Data segment contains extra (static/global data) if present
         if (!cp.blob.extra.empty()) {
             cp.data_segment_name = cp.segment_name + "_data";
+            if (!verified_data_segments.insert(cp.data_segment_name).second)
+                throw std::runtime_error("plugin data segment is not unique: " +
+                                         cp.data_segment_name);
             cp.data_segment_size = (int)cp.blob.extra.size();
-            // Align to 16 for safe ADRP/LDR access
             cp.data_segment_size = (cp.data_segment_size + 15) & ~15;
             cp.data_content.resize(cp.data_segment_size, 0);
         }
@@ -331,15 +385,14 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         plan.name = cp.segment_name;
         plan.size = cp.segment_size;
         plan.content.resize(cp.segment_size, 0);
-        plan.writable = false;  // R-X
+        plan.writable = false;
         segment_plans.push_back(std::move(plan));
-        // Create separate RW- data segment if plugin has static data
         if (!cp.blob.extra.empty()) {
             SegmentPlan dplan;
             dplan.name = cp.data_segment_name;
             dplan.size = cp.data_segment_size;
             dplan.content.resize(cp.data_segment_size, 0);
-            dplan.writable = true;  // RW-
+            dplan.writable = true;
             segment_plans.push_back(std::move(dplan));
         }
     }
@@ -367,20 +420,14 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     for (auto &cp : compiled) {
         if (!cp.has_hooks) continue;
         uint64_t code_va = cp.segment_va + cp.code_offset;
-        // data_va points to the separate RW- data segment (or fallback to
-        // code_va + aligned_text if no extra, which shouldn't happen for
-        // plugins with static data but keeps the old behavior safe)
+        int text_aligned = ((cp.blob.max_text_bytes()) + 15) & ~15;
         uint64_t data_va = cp.blob.extra.empty()
-            ? (code_va + (((int)cp.blob.text.size() + 15) & ~15))
+            ? (code_va + text_aligned)
             : cp.data_segment_va;
         auto built = cp.blob.build(code_va, data_va, &output_path);
-        // build() returns text + padding + extra concatenated; split them
-        int text_aligned = ((int)cp.blob.text.size() + 15) & ~15;
-        // Place text (code) into the R-X segment
+        size_t code_bytes = std::min((size_t)text_aligned, built.size());
         place(cp.content, cp.code_offset,
-              std::vector<uint8_t>(built.begin(),
-                                   built.begin() + std::min((int)cp.blob.text.size(), (int)built.size())));
-        // Place extra (data) into the RW- segment if present
+              std::vector<uint8_t>(built.begin(), built.begin() + code_bytes));
         if (!cp.blob.extra.empty() && (int)built.size() > text_aligned) {
             auto data_start = built.begin() + text_aligned;
             auto data_end = built.end();
@@ -409,7 +456,12 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
             for (auto &[cp, action] : site.handlers)
                 handlers.push_back(handler_va(cp, action));
             uint64_t control_va = site.owner->segment_va + site.control_offset;
-            auto control = build_hook_dispatch(control_va, va, 4, site.original,
+            site.hook_size = hook_window_size(va, control_va);
+            if (site.hook_size > (int)site.original.size())
+                throw std::runtime_error("hook window exceeds readable code at 0x" +
+                                         std::to_string(va));
+            site.original.resize(site.hook_size);
+            auto control = build_hook_dispatch(control_va, va, site.hook_size, site.original,
                                                handlers, site.overrides_original,
                                                layout.is_macho());
             place(site.owner->content, site.control_offset, control);
@@ -440,7 +492,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                    site.overrides_original ? "hook_replace" : "hook_detour",
                    (unsigned long long)va, site.owner->segment_name.c_str(),
                    site.handlers.size());
-            patch_hook_window(output_path, output_path, va, 4, control_va);
+            patch_hook_window(output_path, output_path, va, site.hook_size, control_va);
             printf("[done] 0x%llx\n", (unsigned long long)va);
         }
     };
@@ -526,5 +578,87 @@ void run_pipeline(const std::filesystem::path &input_path,
                           " >/dev/null 2>/dev/null";
         system(cmd.c_str());
 #endif
+    }
+}
+
+static std::string cpp_literal(const std::string &value) {
+    std::string out = "\"";
+    for (char c : value) {
+        if (c == '\\') out += "\\\\";
+        else if (c == '"') out += "\\\"";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else out += c;
+    }
+    out += '"';
+    return out;
+}
+
+static std::string register_list(const std::vector<std::string> &registers) {
+    std::string out;
+    for (size_t i = 0; i < registers.size(); ++i) {
+        if (i) out += ", ";
+        out += registers[i];
+    }
+    return out;
+}
+
+void run_patch_script(const std::filesystem::path &script_path) {
+    auto script = load_patch_script(script_path);
+    auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto generated = std::filesystem::temp_directory_path() /
+        ("armcave-script-" + std::to_string(stamp));
+    std::filesystem::create_directories(generated);
+    try {
+        if (!script.plugins.empty() && std::filesystem::exists(script.plugins)) {
+            for (const auto &entry : std::filesystem::directory_iterator(script.plugins)) {
+                if (entry.path().extension() != ".cpp") continue;
+                std::filesystem::copy_file(
+                    entry.path(), generated / entry.path().filename(),
+                    std::filesystem::copy_options::overwrite_existing);
+            }
+        }
+        for (size_t index = 0; index < script.hooks.size(); ++index) {
+            const auto &hook = script.hooks[index];
+            std::filesystem::path source = hook.source;
+            if (source.is_relative()) source = script.path.parent_path() / source;
+            if (!std::filesystem::exists(source))
+                throw std::runtime_error("patch source not found: " + source.string());
+            auto generated_source = generated /
+                ("patch_script_" + std::to_string(index) + ".cpp");
+            std::ofstream output(generated_source);
+            if (!output)
+                throw std::runtime_error("cannot create generated patch plugin");
+            output << "#include \"armcave.h\"\n";
+            output << "#include " << cpp_literal(std::filesystem::absolute(source).string()) << "\n";
+            output << "void init(void) {\n";
+            std::string registers = register_list(hook.register_args);
+            auto suffix = registers.empty() ? std::string() : ", " + registers;
+            if (!hook.objc_class.empty() && !hook.selector.empty()) {
+                output << "    " << (hook.kind == "hook_detour"
+                    ? "hook_detour_objc_method" : "hook_objc_method") << "("
+                    << cpp_literal(hook.objc_class) << ", "
+                    << cpp_literal(hook.selector) << ", "
+                    << hook.handler << suffix << ");\n";
+            } else if (!hook.signature.empty()) {
+                output << "    " << (hook.kind == "hook_detour"
+                    ? "hook_detour_signature" : "hook_replace_signature") << "("
+                    << cpp_literal(hook.signature) << ", "
+                    << hook.handler << suffix << ");\n";
+            } else {
+                output << "    " << (hook.kind == "hook_detour"
+                    ? "hook_detour_symbol" : "hook_replace_symbol") << "("
+                    << cpp_literal(hook.function) << ", "
+                    << hook.handler << suffix << ");\n";
+            }
+            output << "}\n";
+        }
+        run_pipeline(script.binary, script.output, generated);
+        std::error_code ec;
+        std::filesystem::remove_all(generated, ec);
+    } catch (...) {
+        std::error_code ec;
+        std::filesystem::remove_all(generated, ec);
+        throw;
     }
 }

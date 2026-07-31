@@ -39,6 +39,7 @@ struct PluginBlob {
     std::string default_segment;
 
     int total_bytes() const;
+    int max_text_bytes() const;
     PluginBlob for_action(const HookAction &action) const;
     std::vector<uint8_t> build(uint64_t text_va, uint64_t data_va, const std::filesystem::path *target_binary) const;
 };

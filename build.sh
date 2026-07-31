@@ -13,28 +13,20 @@ need_tool() {
     command -v "$1" >/dev/null 2>&1 || fail "$1 was not found in PATH"
 }
 
-# Config file path (can be overridden via CONF env var)
 CONF="${CONF:-armcave.conf}"
 [ -f "$CONF" ] || fail "$CONF was not found"
 
-# Ensure ArmCaveHook-Arcplugins submodule is present
 if [ ! -d "ArmCaveHook-Arcplugins/.git" ] && [ ! -f "ArmCaveHook-Arcplugins/.git" ]; then
     git submodule update --init --depth 1 2>/dev/null || \
         fail "ArmCaveHook-Arcplugins submodule not found. Run: git submodule update --init"
 fi
 
-# Read a value from the config file.
-# Usage: conf_value [section] key
-#   section="" or omitted → global (before any [section])
-#   section="android"    → inside [android]
 conf_value() {
     section=$1
     key=$2
     if [ -z "$section" ]; then
-        # Global: quit before first [section]
         sed -n '/^\[/q; s/^[[:space:]]*'"$key"'[[:space:]]*=[[:space:]]*//p' "$CONF" | tail -n 1
     else
-        # Section-specific
         sed -n '/^\['"$section"'\]/,/^\[/{
             /^\[/d
             s/^[[:space:]]*'"$key"'[[:space:]]*=[[:space:]]*//p
@@ -42,7 +34,6 @@ conf_value() {
     fi
 }
 
-# Get list of profile names with enable = true
 get_enabled_profiles() {
     awk '
         /^\[/ {
@@ -60,16 +51,13 @@ get_enabled_profiles() {
     ' "$CONF"
 }
 
-# --- Parse global values ---
 build_dir=$(conf_value "" build_dir)
 
 [ -n "$build_dir" ] || fail "build_dir is not set in $CONF"
 
-# --- Get enabled profiles ---
 profiles=$(get_enabled_profiles)
 [ -n "$profiles" ] || fail "No enabled profiles found in $CONF (set enable = true in a [section])"
 
-# --- Build the armcave CLI ---
 need_tool cmake
 need_tool clang
 need_tool clang++
@@ -83,7 +71,6 @@ if [ ! -x "$cli" ] && [ -x "$build_dir/Release/armcave" ]; then
 fi
 [ -x "$cli" ] || fail "built CLI not found under $build_dir"
 
-# --- Run each enabled profile ---
 for profile in $profiles; do
     input=$(conf_value "$profile" input)
     output=$(conf_value "$profile" output)

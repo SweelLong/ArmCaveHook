@@ -23,10 +23,13 @@ std::vector<uint8_t> build_hook_dispatch(
     bool strip_pac);
 
 int plugin_wrapper_size(const std::vector<std::string> &registers);
+int plugin_wrapper_max_size(const std::vector<std::string> &registers);
 std::vector<uint8_t> build_plugin_wrapper(
     const std::vector<std::string> &registers,
     uint64_t wrapper_va,
     uint64_t plugin_va);
+
+int hook_window_size(uint64_t src_va, uint64_t dst_va);
 
 std::vector<uint8_t> build_hook_cave(
     uint64_t cave_va,

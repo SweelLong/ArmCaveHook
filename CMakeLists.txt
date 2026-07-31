@@ -8,6 +8,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 file(GLOB ARMCAVE_SOURCES CONFIGURE_DEPENDS
     src/*.cpp
+    src/aarch64/*.cpp
 )
 
 add_executable(armcave ${ARMCAVE_SOURCES})

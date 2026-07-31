@@ -34,6 +34,19 @@ struct BinaryImport {
     uint64_t stub_address = 0;
 };
 
+struct BinaryChainedFixup {
+    uint64_t address = 0;
+    uint64_t target = 0;
+    uint64_t raw = 0;
+    uint32_t import_ordinal = 0;
+    int64_t addend = 0;
+    uint16_t pointer_format = 0;
+    uint16_t next = 0;
+    bool bind = false;
+    bool authenticated = false;
+    std::string symbol;
+};
+
 struct BinarySection {
     std::string name;
     std::string segment_name;
@@ -84,6 +97,9 @@ public:
     const std::vector<BinarySegment> &segments() const { return segments_; }
     const std::vector<BinarySymbol> &symbols() const { return symbols_; }
     const std::vector<BinaryImport> &imports() const { return imports_; }
+    bool has_chained_fixups() const { return chained_fixups_present_; }
+    const std::vector<BinaryChainedFixup> &chained_fixups() const { return chained_fixups_; }
+    const BinaryChainedFixup *chained_fixup(uint64_t address) const;
 
     BinarySection *section(const std::string &name);
     const BinarySection *section(const std::string &name) const;
@@ -115,6 +131,8 @@ private:
     void parse_macho_tables(uint32_t symoff, uint32_t nsyms,
                             uint32_t stroff, uint32_t strsize,
                             uint32_t indirectoff, uint32_t nindirect);
+    void parse_macho_chained_fixups(uint32_t offset, uint32_t size);
+    void update_macho_chained_fixups(uint32_t segment_index);
     void parse_elf_dynamic(uint64_t dynamic_offset, uint64_t dynamic_size);
     void add_macho_section(const std::string &name, int size,
                            const std::vector<uint8_t> &content,
@@ -133,6 +151,8 @@ private:
     std::vector<BinarySymbol> symbols_;
     std::vector<std::string> indirect_symbols_;
     std::vector<BinaryImport> imports_;
+    std::vector<BinaryChainedFixup> chained_fixups_;
+    bool chained_fixups_present_ = false;
     uint64_t entrypoint_ = 0;
 
     bool fat_ = false;

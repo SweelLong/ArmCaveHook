@@ -1,5 +1,6 @@
 #include "compiler.h"
 #include "symbols.h"
+#include "aarch64/encoder.h"
 #include <cstdio>
 #include <cstring>
 #include <regex>
@@ -108,6 +109,11 @@ static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
                 std::string k = part.substr(0, eq);
                 std::string v = part.substr(eq + 1);
                 if (k == "addr") act.address = (uint64_t)parse_int(v);
+                else if (k == "signature") act.signature = v;
+                else if (k == "symbol") act.symbol = v;
+                else if (k == "objc_class") act.objc_class = v;
+                else if (k == "selector") act.selector = v;
+                else if (k == "swift") act.swift_name = v;
                 else if (k == "handler") act.handler = v;
                 else if (k == "segment") act.segment = v;
                 else if (k == "size") act.size = atoi(v.c_str());
@@ -312,7 +318,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         uint64_t address = reloc.address;
         if (address >= text_sec->size)
             throw std::runtime_error("text relocation is outside __text");
-        if (reloc.type == 10) {  // ARM64_RELOC_ADDEND
+        if (reloc.type == 10) {
             int32_t raw = (int32_t)(reloc.symbol_index & 0x00ffffff);
             if (raw & 0x00800000) raw |= (int32_t)0xff000000;
             pending_addend = raw;
@@ -366,9 +372,17 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
 
 int PluginBlob::total_bytes() const {
     if (extra.empty())
-        return (int)text.size();
-    int aligned = ((int)text.size() + 15) & ~15;
+        return max_text_bytes();
+    int aligned = (max_text_bytes() + 15) & ~15;
     return aligned + (int)extra.size();
+}
+
+int PluginBlob::max_text_bytes() const {
+    int veneers = 0;
+    for (const auto &reloc : relocs)
+        if (reloc.type == 2)
+            veneers += (int)armcave::aarch64::kMaxBranchSequenceBytes;
+    return (int)text.size() + veneers;
 }
 
 PluginBlob PluginBlob::for_action(const HookAction &action) const {
@@ -379,7 +393,10 @@ PluginBlob PluginBlob::for_action(const HookAction &action) const {
         std::string us = "_" + action.handler;
         it = symbol_offsets.find(us);
     }
-    b.entry_offset = (it != symbol_offsets.end()) ? it->second : 0;
+    if (it == symbol_offsets.end())
+        throw std::runtime_error("handler symbol is not local to plugin: " +
+                                 action.handler);
+    b.entry_offset = it->second;
     return b;
 }
 
@@ -387,6 +404,7 @@ std::vector<uint8_t> PluginBlob::build(uint64_t text_va, uint64_t data_va,
                                         const std::filesystem::path *target_binary) const {
     if (!target_binary || relocs.empty()) {
         std::vector<uint8_t> out = text;
+        out.resize((size_t)max_text_bytes(), 0);
         if (!extra.empty()) {
             while (out.size() % 16 != 0) out.push_back(0);
             out.insert(out.end(), extra.begin(), extra.end());
@@ -396,6 +414,7 @@ std::vector<uint8_t> PluginBlob::build(uint64_t text_va, uint64_t data_va,
     auto [new_text, new_extra] = resolve_plugin_relocs(
         text, extra, relocs, section_offsets,
         *target_binary, text_va, data_va);
+    new_text.resize((size_t)max_text_bytes(), 0);
     std::vector<uint8_t> out = new_text;
     if (!new_extra.empty()) {
         while (out.size() % 16 != 0) out.push_back(0);

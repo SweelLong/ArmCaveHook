@@ -1,8 +1,14 @@
 #include "symbols.h"
 #include "compiler.h"
+#include "aarch64/encoder.h"
 #include <cstring>
 #include <set>
 #include <cstdio>
+#include <algorithm>
+#include <cstdlib>
+#ifdef __GNUG__
+#include <cxxabi.h>
+#endif
 
 static std::vector<std::string> names(const std::string &symbol_name) {
     std::vector<std::string> out;
@@ -20,33 +26,33 @@ static std::vector<std::string> names(const std::string &symbol_name) {
     return out;
 }
 
-static int resolve_marker(const std::string &symbol_name, const std::string &marker) {
+static uint64_t resolve_marker(const std::string &symbol_name, const std::string &marker) {
     for (auto &name : names(symbol_name)) {
         auto idx = name.find(marker);
         if (idx == std::string::npos) continue;
         std::string raw = name.substr(idx + marker.size());
         while (!raw.empty() && (raw.back() == 'U' || raw.back() == 'L' || raw.back() == 'u' || raw.back() == 'l'))
             raw.pop_back();
-        return (int)strtoull(raw.c_str(), nullptr, 0);
+        return strtoull(raw.c_str(), nullptr, 0);
     }
     return 0;
 }
 
-static int resolve_armcave_va(const std::string &symbol_name) {
+static uint64_t resolve_armcave_va(const std::string &symbol_name) {
     return resolve_marker(symbol_name, "armcave_va_");
 }
 
-static int resolve_armcave_data(const std::string &symbol_name) {
+static uint64_t resolve_armcave_data(const std::string &symbol_name) {
     return resolve_marker(symbol_name, "armcave_data_");
 }
 
-static int resolve_via_symbol_table(BinaryImage *binary, const std::string &symbol_name) {
+static uint64_t resolve_via_symbol_table(BinaryImage *binary, const std::string &symbol_name) {
     if (binary->is_elf()) {
         for (const auto &candidate : names(symbol_name)) {
             auto direct = binary->symbol_address(candidate);
-            if (direct) return (int)*direct;
+            if (direct) return *direct;
             auto stub = binary->import_stub(candidate);
-            if (stub) return (int)*stub;
+            if (stub) return *stub;
         }
         return 0;
     }
@@ -61,16 +67,57 @@ static int resolve_via_symbol_table(BinaryImage *binary, const std::string &symb
         int idx = (int)stubs->reserved1 + i;
         auto *symbol = binary->indirect_symbol(idx);
         if (symbol && name_set.count(*symbol))
-            return (int)(stubs->virtual_address + i * size);
+            return stubs->virtual_address + (uint64_t)i * (uint64_t)size;
     }
     return 0;
 }
 
-static int resolve_import_slot(BinaryImage *binary, const std::string &symbol_name) {
+static std::string demangled_name(const std::string &name) {
+#ifdef __GNUG__
+    std::vector<std::string> candidates{name};
+    if (!name.empty() && name[0] == '_') candidates.push_back(name.substr(1));
+    for (const auto &candidate : candidates) {
+        int status = 0;
+        char *value = abi::__cxa_demangle(candidate.c_str(), nullptr, nullptr, &status);
+        if (status == 0 && value) {
+            std::string result(value);
+            free(value);
+            return result;
+        }
+        free(value);
+    }
+#endif
+    return {};
+}
+
+uint64_t find_function_address(BinaryImage *binary, const std::string &query) {
+    if (!binary || query.empty()) return 0;
+    std::set<uint64_t> matches;
+    for (const auto &symbol : binary->symbols()) {
+        if (symbol.undefined() || !symbol.value) continue;
+        std::string plain = symbol.name;
+        if (!plain.empty() && plain[0] == '_') plain.erase(plain.begin());
+        std::string demangled = demangled_name(symbol.name);
+        bool match = symbol.name == query || plain == query ||
+                     symbol.name.find(query) != std::string::npos ||
+                     plain.find(query) != std::string::npos ||
+                     (!demangled.empty() && (demangled == query ||
+                                              demangled.find(query) != std::string::npos));
+        if (match) matches.insert(symbol.value);
+    }
+    if (matches.size() == 1) return *matches.begin();
+    for (const auto &candidate : names(query)) {
+        auto value = binary->symbol_address(candidate);
+        if (value) matches.insert(*value);
+    }
+    return matches.size() == 1 ? *matches.begin() : 0;
+}
+
+static uint64_t resolve_import_slot(BinaryImage *binary, const std::string &symbol_name) {
     if (binary->is_elf()) {
         for (const auto &candidate : names(symbol_name)) {
             auto slot = binary->import_slot(candidate);
-            if (slot) return (int)*slot;
+            if (slot) return *slot;
         }
         return 0;
     }
@@ -84,7 +131,7 @@ static int resolve_import_slot(BinaryImage *binary, const std::string &symbol_na
             int idx = (int)sec.reserved1 + i;
             auto *symbol = binary->indirect_symbol(idx);
             if (symbol && name_set.count(*symbol))
-                return (int)(sec.virtual_address + i * 8);
+                return sec.virtual_address + (uint64_t)i * 8;
         }
     }
     return 0;
@@ -126,50 +173,68 @@ std::vector<std::pair<std::string, std::string>> list_available_symbols(
     return out;
 }
 
-static void patch_branch26(std::vector<uint8_t> &data, int off, int src, int dst) {
-    int imm = (dst - src) >> 2;
-    if (imm < -(1 << 25) || imm >= (1 << 25))
+static uint32_t read_word(const std::vector<uint8_t> &data, int off) {
+    if (off < 0 || (size_t)off + 4 > data.size())
+        throw std::runtime_error("relocation offset is outside text");
+    uint32_t insn;
+    memcpy(&insn, data.data() + off, 4);
+    return insn;
+}
+
+static void write_word(std::vector<uint8_t> &data, int off, uint32_t insn) {
+    if (off < 0 || (size_t)off + 4 > data.size())
+        throw std::runtime_error("relocation offset is outside text");
+    memcpy(data.data() + off, &insn, 4);
+}
+
+static void patch_branch26(std::vector<uint8_t> &data, int off,
+                           uint64_t src, uint64_t dst) {
+    uint32_t insn = read_word(data, off);
+    if (!armcave::aarch64::fits_branch26(src, dst))
         throw std::runtime_error("branch relocation out of range");
-    uint32_t insn;
-    memcpy(&insn, data.data() + off, 4);
-    insn = (insn & 0xFC000000) | (imm & 0x03FFFFFF);
-    memcpy(data.data() + off, &insn, 4);
+    int64_t delta = dst >= src ? (int64_t)(dst - src) : -(int64_t)(src - dst);
+    uint32_t encoded = (insn & 0xfc000000U) |
+        ((uint32_t)(delta / 4) & 0x03ffffffU);
+    write_word(data, off, encoded);
 }
 
-static void patch_page21(std::vector<uint8_t> &data, int off, int pc, int target) {
-    int diff = ((target & ~0xFFF) - (pc & ~0xFFF)) >> 12;
-    uint32_t imm = diff & 0x1FFFFF;
-    uint32_t insn;
-    memcpy(&insn, data.data() + off, 4);
-    insn = (insn & 0x9F00001F) | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5);
-    memcpy(data.data() + off, &insn, 4);
+static void patch_page21(std::vector<uint8_t> &data, int off,
+                         uint64_t pc, uint64_t target) {
+    uint32_t insn = read_word(data, off);
+    uint32_t encoded = armcave::aarch64::encode_adrp(
+        (uint8_t)(insn & 0x1fU), pc, target);
+    write_word(data, off, encoded);
 }
 
-static void patch_pageoff12(std::vector<uint8_t> &data, int off, int target) {
-    uint32_t insn;
-    memcpy(&insn, data.data() + off, 4);
+static void patch_pageoff12(std::vector<uint8_t> &data, int off, uint64_t target) {
+    uint32_t insn = read_word(data, off);
     int scale = 1;
-    // ADD/SUB immediate: (insn & 0x1F800000) == 0x11000000 -> scale = 1
-    // LDR/STR unsigned immediate: (insn & 0x3B000000) == 0x39000000 -> scale = 1 << size
     if ((insn & 0x3B000000) == 0x39000000)
         scale = 1 << ((insn >> 30) & 3);
-    int imm = (target & 0xFFF) / scale;
+    if ((target & 0xfffU) % (uint64_t)scale)
+        throw std::runtime_error("pageoff relocation is not aligned");
+    uint64_t imm = (target & 0xfffU) / (uint64_t)scale;
+    if (imm > 0xfffU)
+        throw std::runtime_error("pageoff relocation is out of range");
     insn = (insn & 0xFFC003FF) | (imm << 10);
-    memcpy(data.data() + off, &insn, 4);
+    write_word(data, off, insn);
 }
 
-static void patch_got_load_pageoff12(std::vector<uint8_t> &data, int off, int target) {
-    uint32_t insn;
-    memcpy(&insn, data.data() + off, 4);
+static void patch_got_load_pageoff12(std::vector<uint8_t> &data, int off,
+                                     uint64_t target) {
+    uint32_t insn = read_word(data, off);
     int scale = ((insn & 0xC0000000) == 0xC0000000) ? 8 : 4;
-    int imm = (target & 0xFFF) / scale;
+    if ((target & 0xfffU) % (uint64_t)scale)
+        throw std::runtime_error("GOT pageoff relocation is not aligned");
+    uint64_t imm = (target & 0xfffU) / (uint64_t)scale;
+    if (imm > 0xfffU)
+        throw std::runtime_error("GOT pageoff relocation is out of range");
     insn = (insn & 0xFFC003FF) | (imm << 10);
-    memcpy(data.data() + off, &insn, 4);
+    write_word(data, off, insn);
 }
 
-static void patch_ldr_to_add(std::vector<uint8_t> &data, int off, int target) {
-    uint32_t insn;
-    memcpy(&insn, data.data() + off, 4);
+static void patch_ldr_to_add(std::vector<uint8_t> &data, int off, uint64_t target) {
+    uint32_t insn = read_word(data, off);
     uint32_t opcode;
     if ((insn & 0xFF000000) == 0xF9000000)
         opcode = 0x91000000;
@@ -183,7 +248,38 @@ static void patch_ldr_to_add(std::vector<uint8_t> &data, int off, int target) {
     }
     uint32_t imm12 = target & 0xFFF;
     insn = opcode | (imm12 << 10) | (insn & 0x000003FF);
-    memcpy(data.data() + off, &insn, 4);
+    write_word(data, off, insn);
+}
+
+static uint64_t relocation_target(const RelocEntry &reloc,
+                                  BinaryImage *binary,
+                                  const std::map<std::string, int> &offsets,
+                                  uint64_t text_va, uint64_t data_va) {
+    if (reloc.symbol_value == 0 && reloc.symbol_section.empty()) {
+        uint64_t target = resolve_armcave_va(reloc.symbol_name);
+        if (!target) target = resolve_via_symbol_table(binary, reloc.symbol_name);
+        if (!target) throw std::runtime_error("unresolved symbol: " + reloc.symbol_name);
+        return target + reloc.addend;
+    }
+    if (reloc.symbol_section == "__text")
+        return text_va + reloc.symbol_value + reloc.addend;
+    auto it = offsets.find(reloc.symbol_section);
+    if (it == offsets.end())
+        throw std::runtime_error("unknown section: " + reloc.symbol_section);
+    return data_va + (uint64_t)it->second + reloc.symbol_value + reloc.addend;
+}
+
+static uint64_t data_relocation_target(const RelocEntry &reloc,
+                                       BinaryImage *binary,
+                                       const std::map<std::string, int> &offsets,
+                                       uint64_t text_va, uint64_t data_va) {
+    uint64_t target = resolve_armcave_data(reloc.symbol_name);
+    if (target) return target + reloc.addend;
+    if (!reloc.symbol_section.empty())
+        return relocation_target(reloc, binary, offsets, text_va, data_va);
+    target = resolve_import_slot(binary, reloc.symbol_name);
+    if (!target) throw std::runtime_error("unresolved import slot: " + reloc.symbol_name);
+    return target + reloc.addend;
 }
 
 std::pair<std::vector<uint8_t>, std::vector<uint8_t>>
@@ -211,77 +307,48 @@ resolve_plugin_relocs(
         auto &section = r.symbol_section;
         int64_t addend = r.addend;
 
-        if (t == 2 && !name.empty()) {
-            int dst = 0;
-            if (val == 0 && section.empty()) {
-                dst = resolve_armcave_va(name);
-                if (!dst) dst = resolve_via_symbol_table(binary.get(), name);
-            } else {
-                dst = (int)(text_va + val);
+        if (t == 2) {
+            uint64_t dst = relocation_target(r, binary.get(), offsets, text_va, data_va);
+            uint64_t src = text_va + (uint64_t)off;
+            uint32_t instruction = read_word(text_buf, off);
+            if (!armcave::aarch64::fits_branch26(src, dst)) {
+                uint64_t veneer = text_va + text_buf.size();
+                auto sequence = armcave::aarch64::make_address_sequence(
+                    veneer, dst, 16);
+                text_buf.insert(text_buf.end(), sequence.begin(), sequence.end());
+                uint32_t jump = armcave::aarch64::encode_br(16);
+                text_buf.push_back((uint8_t)jump);
+                text_buf.push_back((uint8_t)(jump >> 8));
+                text_buf.push_back((uint8_t)(jump >> 16));
+                text_buf.push_back((uint8_t)(jump >> 24));
+                if (!armcave::aarch64::fits_branch26(src, veneer))
+                    throw std::runtime_error("branch veneer is out of range: " + name);
+                dst = veneer;
             }
-            if (!dst)
-                throw std::runtime_error("unresolved symbol: " + name);
-            patch_branch26(text_buf, off, (int)(text_va + off), dst);
+            patch_branch26(text_buf, off, src, dst);
 
         } else if (t == 3) {
-            int dst = 0;
-            if (!name.empty()) dst = resolve_armcave_data(name);
-            if (dst) {
-                patch_page21(text_buf, off, (int)(text_va + off), dst);
-            } else if (!section.empty()) {
-                int target;
-                if (section == "__text")
-                    target = (int)((int64_t)text_va + (int64_t)val + addend);
-                else {
-                    auto it = offsets.find(section);
-                    if (it == offsets.end())
-                        throw std::runtime_error("unknown section: " + section);
-                    target = (int)((int64_t)data_va + it->second +
-                                   (int64_t)val + addend);
-                }
-                patch_page21(text_buf, off, (int)(text_va + off), target);
-            }
+            patch_page21(text_buf, off, text_va + (uint64_t)off,
+                         data_relocation_target(r, binary.get(), offsets,
+                                                text_va, data_va));
 
         } else if (t == 4) {
-            int dst = 0;
-            if (!name.empty()) dst = resolve_armcave_data(name);
-            if (dst) {
-                patch_pageoff12(text_buf, off, dst);
-            } else if (!section.empty()) {
-                int target;
-                if (section == "__text")
-                    target = (int)((int64_t)text_va + (int64_t)val + addend);
-                else {
-                    auto it = offsets.find(section);
-                    if (it == offsets.end())
-                        throw std::runtime_error("unknown section: " + section);
-                    target = (int)((int64_t)data_va + it->second +
-                                   (int64_t)val + addend);
-                }
-                patch_pageoff12(text_buf, off, target);
-            }
+            patch_pageoff12(text_buf, off,
+                            data_relocation_target(r, binary.get(), offsets,
+                                                   text_va, data_va));
 
         } else if (t == 5 && !name.empty()) {
-            int dst = resolve_armcave_data(name);
-            if (dst) {
-                patch_page21(text_buf, off, (int)(text_va + off), dst);
-            } else {
-                int target = resolve_import_slot(binary.get(), name);
-                if (!target)
-                    throw std::runtime_error("unresolved import slot: " + name);
-                patch_page21(text_buf, off, (int)(text_va + off), target);
-            }
+            patch_page21(text_buf, off, text_va + (uint64_t)off,
+                         data_relocation_target(r, binary.get(), offsets,
+                                                text_va, data_va));
 
         } else if (t == 6 && !name.empty()) {
-            int dst = resolve_armcave_data(name);
-            if (dst) {
-                patch_ldr_to_add(text_buf, off, dst);
-            } else {
-                int target = resolve_import_slot(binary.get(), name);
-                if (!target)
-                    throw std::runtime_error("unresolved import slot: " + name);
+            uint64_t target = data_relocation_target(r, binary.get(), offsets,
+                                                     text_va, data_va);
+            if (resolve_armcave_data(name))
+                patch_ldr_to_add(text_buf, off, target);
+            else
                 patch_got_load_pageoff12(text_buf, off, target);
-            }
         }
     }
 

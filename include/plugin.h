@@ -7,6 +7,11 @@
 struct HookAction {
     std::string kind;
     uint64_t address = 0;
+    std::string signature;
+    std::string symbol;
+    std::string objc_class;
+    std::string selector;
+    std::string swift_name;
     std::string handler;
     std::string segment = "auto";
     std::vector<std::string> register_args;

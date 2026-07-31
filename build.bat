@@ -16,7 +16,6 @@ if not exist "%conf%" (
     exit /b 1
 )
 
-:: Ensure ArmCaveHook-Arcplugins submodule is present
 if not exist "ArmCaveHook-Arcplugins\.git" (
     git submodule update --init --depth 1 2>nul
     if errorlevel 1 (

@@ -10,30 +10,78 @@ typedef signed int i32;
 typedef signed long i64;
 typedef unsigned long addr_t;
 
-struct armcave_apple_string {
+#include "armcave_sdk.h"
+
+struct armcave_string {
     char bytes[24];
+#ifndef ARMCAVE_ELF
     enum { kMetadataOffset = sizeof(bytes) - 1 };
+#endif
 };
 
-static inline armcave_apple_string armcave_apple_string_make(const char *text) {
-    armcave_apple_string value = {};
+static inline armcave_string armcave_string_make(const char *text) {
+    armcave_string value = {};
+    if (!text)
+        return value;
     unsigned long length = 0;
-    while (length < armcave_apple_string::kMetadataOffset - 1 && text[length]) {
+#ifdef ARMCAVE_ELF
+    while (length < sizeof(value.bytes) - 2 && text[length]) {
+        value.bytes[length + 1] = text[length];
+        ++length;
+    }
+    value.bytes[0] = (char)(length << 1);
+#else
+    while (length < armcave_string::kMetadataOffset - 1 && text[length]) {
         value.bytes[length] = text[length];
         ++length;
     }
-    value.bytes[armcave_apple_string::kMetadataOffset] = (char)length;
+    value.bytes[armcave_string::kMetadataOffset] = (char)length;
+#endif
     return value;
 }
 
-static inline const char *armcave_apple_string_data(const armcave_apple_string &value) {
-    return (value.bytes[armcave_apple_string::kMetadataOffset] & 0x80)
+static inline const char *armcave_string_data(const armcave_string &value) {
+#ifdef ARMCAVE_ELF
+    return (value.bytes[0] & 1)
+               ? *(const char *const *)(value.bytes + 16)
+               : value.bytes + 1;
+#else
+    return (value.bytes[armcave_string::kMetadataOffset] & 0x80)
                ? *(const char *const *)value.bytes
                : value.bytes;
+#endif
 }
 
-static inline armcave_apple_string armcave_apple_file_manager_get(void *manager, void *path) {
-    typedef armcave_apple_string (*Method)(void *, void *);
+static inline unsigned long armcave_string_size(const armcave_string &value) {
+#ifdef ARMCAVE_ELF
+    return (value.bytes[0] & 1)
+               ? *(const unsigned long *)(value.bytes + 8)
+               : (u8)value.bytes[0] >> 1;
+#else
+    i8 metadata = (i8)value.bytes[armcave_string::kMetadataOffset];
+    return metadata < 0
+               ? *(const unsigned long *)(value.bytes + sizeof(addr_t))
+               : (u8)metadata;
+#endif
+}
+
+typedef void (*armcave_string_release_fn)(void *);
+
+static inline void armcave_string_destroy(
+    armcave_string &value, armcave_string_release_fn release)
+{
+#ifdef ARMCAVE_ELF
+    if ((value.bytes[0] & 1) && release)
+        release(*(void **)(value.bytes + 16));
+#else
+    if ((i8)value.bytes[armcave_string::kMetadataOffset] < 0 && release)
+        release(*(void **)value.bytes);
+#endif
+    value = {};
+}
+
+static inline armcave_string armcave_file_manager_get(void *manager, void *path) {
+    typedef armcave_string (*Method)(void *, void *);
     Method method = (Method)(*(void ***)manager)[5];
     return method(manager, path);
 }
@@ -47,10 +95,6 @@ extern "C" int armcave_android_log_print(int priority, const char *tag,
 __attribute__((always_inline))
 static inline void armcave_sys_write(const char *p, int len) {
 #ifdef ARMCAVE_ELF
-    // libcocos2dcpp.so already imports this symbol from liblog, so the plugin
-    // can call its existing PLT entry without adding a new ELF dependency.
-    // Do not pass variadic arguments here: plugins are compiled with Darwin's
-    // AArch64 ABI, whose variadic calling convention differs from Android's.
     char escaped[512];
     int out = 0;
     for (int i = 0; i < len && out < (int)sizeof(escaped) - 1; ++i) {
@@ -71,53 +115,6 @@ static inline void armcave_sys_write(const char *p, int len) {
         : [buf] "r"((long)p), [len] "r"((long)len)
         : "x0", "x1", "x2", "x16", "memory", "cc");
 #endif
-}
-
-static inline int armcave_itoa(char *buf, int val) {
-    int pos = 0;
-    if (val < 0) {
-        buf[pos++] = '-';
-        val = -val;
-    }
-    char tmp[12];
-    int tpos = 0;
-    do {
-        tmp[tpos++] = '0' + (char)(val % 10);
-        val /= 10;
-    } while (val > 0);
-    while (tpos > 0) buf[pos++] = tmp[--tpos];
-    buf[pos] = '\0';
-    return pos;
-}
-
-static inline bool armcave_json_value(const char *json, int key, char *out, unsigned long out_size) {
-    if (!json || !out || out_size == 0) return false;
-
-    char key_buf[16];
-    armcave_itoa(key_buf, key);
-    for (const char *p = json; *p; ++p) {
-        while (*p && *p++ != '"') {}
-        if (!*p) break;
-        const char *a = key_buf;
-        const char *b = p;
-        while (*a && *b && *a == *b) {
-            ++a;
-            ++b;
-        }
-        if (!*a && *b == '"') {
-            p = b + 1;
-            while (*p && *p++ != '"') {}
-            if (!*p) break;
-            const char *value = p;
-            while (*p && *p != '"') ++p;
-            unsigned long length = 0;
-            for (const char *c = value; c < p && length + 1 < out_size; ++length)
-                out[length] = *c++;
-            out[length] = 0;
-            return true;
-        }
-    }
-    return false;
 }
 
 static inline int armcave_utoa(char *buf, unsigned long val, int base, int upper) {
@@ -214,6 +211,31 @@ static const unsigned char armcave_asm_data[] = {
     __attribute__((used, section("__DATA,__armkeep"))) \
     static void *armcave_unique(armcave_keep_) = (void *)&handler
 
+#define armcave_meta_signature(kind, signature, handler, segment, ...) \
+    __attribute__((used, section("__DATA,__armhook"))) \
+    static const char armcave_unique(armcave_meta_signature_)[] = \
+        kind "|signature=" signature "|handler=" #handler \
+        "|regs=" #__VA_ARGS__ "|segment=" #segment; \
+    __attribute__((used, section("__DATA,__armkeep"))) \
+    static void *armcave_unique(armcave_signature_keep_) = (void *)&handler
+
+#define armcave_meta_symbol(kind, symbol, handler, segment, ...) \
+    __attribute__((used, section("__DATA,__armhook"))) \
+    static const char armcave_unique(armcave_meta_symbol_)[] = \
+        kind "|symbol=" symbol "|handler=" #handler \
+        "|regs=" #__VA_ARGS__ "|segment=" #segment; \
+    __attribute__((used, section("__DATA,__armkeep"))) \
+    static void *armcave_unique(armcave_symbol_keep_) = (void *)&handler
+
+#define armcave_meta_objc(kind, class_name, selector, handler, segment, ...) \
+    __attribute__((used, section("__DATA,__armhook"))) \
+    static const char armcave_unique(armcave_meta_objc_)[] = \
+        kind "|objc_class=" class_name "|selector=" selector \
+        "|handler=" #handler "|regs=" #__VA_ARGS__ "|segment=" #segment; \
+    __attribute__((used, section("__DATA,__armkeep"))) \
+    static void *armcave_unique(armcave_objc_keep_) = (void *)&handler
+
+
 #define armcave_patch_meta(kind, addr, size, payload, segment) \
     __attribute__((used, section("__DATA,__armhook"))) \
     static const char armcave_unique(armcave_patch_meta_)[] = \
@@ -225,6 +247,34 @@ static const unsigned char armcave_asm_data[] = {
 
 #define hook_detour(addr, handler, ...) \
     armcave_meta("hook_detour", addr, handler, auto, __VA_ARGS__)
+
+#define hook_replace_signature(signature, handler, ...) \
+    armcave_meta_signature("hook_replace", signature, handler, auto, __VA_ARGS__)
+
+#define hook_detour_signature(signature, handler, ...) \
+    armcave_meta_signature("hook_detour", signature, handler, auto, __VA_ARGS__)
+
+#define hook_replace_symbol(symbol, handler, ...) \
+    armcave_meta_symbol("hook_replace", symbol, handler, auto, __VA_ARGS__)
+
+#define hook_detour_symbol(symbol, handler, ...) \
+    armcave_meta_symbol("hook_detour", symbol, handler, auto, __VA_ARGS__)
+
+#define armcave_match(value) value
+#define match(value) armcave_match(value)
+
+#define replace_function(matcher, handler, ...) \
+    hook_replace_symbol(matcher, handler, __VA_ARGS__)
+
+#define detour_function(matcher, handler, ...) \
+    hook_detour_symbol(matcher, handler, __VA_ARGS__)
+
+#define hook_objc_method(class_name, selector, handler, ...) \
+    armcave_meta_objc("hook_replace", class_name, selector, handler, auto, __VA_ARGS__)
+
+#define hook_detour_objc_method(class_name, selector, handler, ...) \
+    armcave_meta_objc("hook_detour", class_name, selector, handler, auto, __VA_ARGS__)
+
 
 #define armcave_patch_asm(addr, asm_text) \
     armcave_patch_meta("patch_asm", addr, 0, asm_text, auto)
@@ -259,6 +309,34 @@ static inline T read_mem(addr_t addr) {
 template <typename T>
 static inline void write_mem(addr_t addr, T value) {
     *(volatile T *)addr = value;
+}
+
+static inline int armcave_timer_now_ms(
+    addr_t gameplay,
+    addr_t gameplay_timer_offset,
+    addr_t timer_flag_offset,
+    addr_t timer_ms_a_offset,
+    addr_t timer_ms_b_offset,
+    addr_t timer_ms_c_offset,
+    int missing_value,
+    int nonpositive_adjustment,
+    bool clamp_minimum,
+    int minimum_value) {
+    if (!gameplay)
+        return missing_value;
+    addr_t timer = read_mem<addr_t>(gameplay + gameplay_timer_offset);
+    if (!timer)
+        return missing_value;
+    if (read_mem<u8>(timer + timer_flag_offset) != 0)
+        return read_mem<i32>(timer + timer_ms_a_offset) -
+               read_mem<i32>(timer + timer_ms_b_offset);
+    int timer_ms_c = read_mem<i32>(timer + timer_ms_c_offset);
+    int value = timer_ms_c - read_mem<i32>(timer + timer_ms_b_offset);
+    if (nonpositive_adjustment != 0 && timer_ms_c <= 0)
+        value += nonpositive_adjustment;
+    if (clamp_minimum && value < minimum_value)
+        value = minimum_value;
+    return value;
 }
 
 static inline addr_t resolve_vfunc(addr_t obj, addr_t offset) {
