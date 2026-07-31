@@ -242,6 +242,12 @@ static const unsigned char armcave_asm_data[] = {
         kind "|addr=" armcave_str(addr) "|size=" armcave_str(size) \
         "|data=" payload "|segment=" #segment
 
+#define armcave_patch_meta_signature(kind, signature, payload, segment) \
+    __attribute__((used, section("__DATA,__armhook"))) \
+    static const char armcave_unique(armcave_patch_meta_signature_)[] = \
+        kind "|signature=" signature "|size=0|data=" payload \
+        "|segment=" #segment
+
 #define hook_replace(addr, handler, ...) \
     armcave_meta("hook_replace", addr, handler, auto, __VA_ARGS__)
 
@@ -285,12 +291,30 @@ static const unsigned char armcave_asm_data[] = {
         kind "|addr=" armcave_str(addr) "|expected=" armcave_str(expected) \
         "|size=0|data=" payload "|segment=" #segment
 
+#define armcave_patch_meta_signature_expected(kind, signature, expected, payload, segment) \
+    __attribute__((used, section("__DATA,__armhook"))) \
+    static const char armcave_unique(armcave_patch_meta_signature_expected_)[] = \
+        kind "|signature=" signature "|expected=" armcave_str(expected) \
+        "|size=0|data=" payload "|segment=" #segment
+
 #define armcave_patch_asm_expected(addr, asm_text, expected) \
     armcave_patch_meta_expected("patch_asm", addr, expected, asm_text, auto)
+
+#define armcave_patch_asm_signature(signature, asm_text) \
+    armcave_patch_meta_signature("patch_asm", signature, asm_text, auto)
+
+#define armcave_patch_asm_signature_expected(signature, asm_text, expected) \
+    armcave_patch_meta_signature_expected("patch_asm", signature, expected, asm_text, auto)
 
 #define armcave_pick_patch_asm(_1, _2, _3, name, ...) name
 #define patch_asm(...) \
     armcave_pick_patch_asm(__VA_ARGS__, armcave_patch_asm_expected, armcave_patch_asm)(__VA_ARGS__)
+
+#define armcave_pick_patch_signature(_1, _2, _3, name, ...) name
+#define patch_asm_signature(...) \
+    armcave_pick_patch_signature(__VA_ARGS__, \
+                                 armcave_patch_asm_signature_expected, \
+                                 armcave_patch_asm_signature)(__VA_ARGS__)
 
 #define bind_func_by_sym(ret, name, args, symbol) \
     extern ret name args asm(symbol)

@@ -194,7 +194,7 @@ extern "C" void init(void) {
 
 `bind_func_by_addr`、`hook_replace(addr, ...)` 和 `hook_detour(addr, ...)` 仍然是固定地址
 API。它们不会自动寻找新版本位置；插件中的目标函数地址、字段偏移和 ABI 变化也必须单独
-处理。当前仓库的 Arcaea 插件仍绑定 6.13.10 地址，因此不能宣称对后续游戏版本自动兼容。
+处理。
 
 ### 指令校验
 
@@ -386,6 +386,13 @@ plugins = ArmCaveHook-Arcplugins/plugins/apple
 - [x] Objective-C class/method/category metadata 和 Swift metadata 分析
 - [x] `patch.toml` 自动脚本层和最小化 handler source 工作流
 - [x] 结构化诊断日志
+
+## TODO
+
+- [ ] 补充 Mach-O 代码签名失效、codesign/ldid/企业证书重签名流程与提示
+- [ ] 增加字节签名稳定性说明和签名存活率估算工具
+- [ ] 提供可选的轻量级 C++ 插件工具集
+- [ ] 补充 Android ELF 的 DT_RELR、eh_frame 等覆盖度与文档
 
 ## License
 

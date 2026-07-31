@@ -217,9 +217,7 @@ extern "C" void init(void) {
 
 `bind_func_by_addr`, `hook_replace(addr, ...)`, and `hook_detour(addr, ...)` remain fixed-address
 APIs. They do not search for a new-version location. Target-function addresses, object field
-offsets, and ABI changes in a plugin must also be handled separately. The Arcaea plugins in this
-repository still bind the 6.13.10 addresses and therefore are not automatically compatible with
-later game versions.
+offsets, and ABI changes in a plugin must also be handled separately.
 
 ### Expected Bytes
 
@@ -430,6 +428,13 @@ Build requirements:
 - [x] Objective-C class/method/category metadata and Swift metadata analysis
 - [x] `patch.toml` automation layer and minimal handler-source workflow
 - [x] Structured diagnostics
+
+## TODO
+
+- [ ] Document Mach-O code-signature invalidation and codesign/ldid/enterprise re-signing workflows
+- [ ] Add honest byte-signature stability guidance and a signature survival estimator
+- [ ] Provide an optional lightweight C++ toolkit for plugins
+- [ ] Expand Android ELF coverage and documentation for DT_RELR and eh_frame
 
 ## License
 
