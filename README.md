@@ -1,5 +1,19 @@
 # ArmCaveHook
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
+  <img src="https://img.shields.io/badge/Apple-Apple%20Mach--O-lightgrey?logo=apple" alt="Apple">
+  <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
+  <img src="https://img.shields.io/badge/Language-C%2B%2B17-blue?logo=cplusplus" alt="C++17">
+  <img src="https://img.shields.io/badge/CMake-3.24+-blue?logo=cmake" alt="CMake">
+  <img src="https://img.shields.io/badge/License-MIT-yellow?logo=opensourceinitiative" alt="License">
+  <img src="https://img.shields.io/github/last-commit/SweelLong/ArmCaveHook?logo=git" alt="Last Commit">
+  <img src="https://img.shields.io/github/repo-size/SweelLong/ArmCaveHook?logo=hackthebox" alt="Repo Size">
+  <img src="https://img.shields.io/badge/Docs-English%20%7C%20中文-brightgreen?logo=readthedocs" alt="Docs">
+</p>
+
+中文 | [English](README_EN.md)
+
 ArmCaveHook 是面向 AArch64 的静态二进制 patch 框架。它把 C++ 插件编译成独立的代码段和数据段，分析原始指令，生成 trampoline，处理 relocation，最后写回 64 位 Mach-O 或 ELF 文件。
 
 目标架构只有 ARM64/AArch64。Apple 使用 64 位 Mach-O，Android 使用 64 位 ELF；不提供 x86、32 位 ARM 或其他目标架构支持。宿主机可以是 macOS、Linux 或 Windows，插件始终按 AArch64 目标编译。
