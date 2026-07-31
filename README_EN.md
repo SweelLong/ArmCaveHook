@@ -1,5 +1,19 @@
 # ArmCaveHook
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Arch-ARM64%20%7C%20AArch64-blue?logo=arm" alt="ARM64">
+  <img src="https://img.shields.io/badge/Apple-Apple%20Mach--O-lightgrey?logo=apple" alt="Apple">
+  <img src="https://img.shields.io/badge/Android-Android%20ELF-lightgrey?logo=android" alt="Android">
+  <img src="https://img.shields.io/badge/Language-C%2B%2B17-blue?logo=cplusplus" alt="C++17">
+  <img src="https://img.shields.io/badge/CMake-3.24+-blue?logo=cmake" alt="CMake">
+  <img src="https://img.shields.io/badge/License-MIT-yellow?logo=opensourceinitiative" alt="License">
+  <img src="https://img.shields.io/github/last-commit/SweelLong/ArmCaveHook?logo=git" alt="Last Commit">
+  <img src="https://img.shields.io/github/repo-size/SweelLong/ArmCaveHook?logo=hackthebox" alt="Repo Size">
+  <img src="https://img.shields.io/badge/Docs-English%20%7C%20中文-brightgreen?logo=readthedocs" alt="Docs">
+</p>
+
+[中文](README.md) | English
+
 ArmCaveHook is an AArch64 static binary patch framework. It compiles C++ plugins into independent code and data segments, analyzes original instructions, generates trampolines, resolves relocations, and writes the result back to 64-bit Mach-O or ELF binaries.
 
 The only supported target architecture is ARM64/AArch64. Apple targets use 64-bit Mach-O and Android targets use 64-bit ELF. x86, 32-bit ARM, and other target architectures are not supported.
@@ -63,7 +77,7 @@ extern "C" int replacement(int value) {
     return value + 1;
 }
 
-void init(void) {
+extern "C" void init(void) {
     hook_replace(0x100000498, replacement, w0);
 }
 ```
@@ -169,7 +183,7 @@ extern "C" void on_tick(void *object) {
     read_mem<void *>(reinterpret_cast<addr_t>(object));
 }
 
-void init(void) {
+extern "C" void init(void) {
     hook_detour_signature(
         "FD 7B BF A9 ?? ?? ?? ?? FD 03 00 91 ?? ?? ?? ??",
         on_tick, x0);
@@ -196,7 +210,7 @@ extern "C" void replacement(void *player) {
     target_update(player);
 }
 
-void init(void) {
+extern "C" void init(void) {
     hook_replace_symbol("_ZN6Player6updateEv", replacement, x0);
 }
 ```
@@ -270,7 +284,7 @@ auto swift = armcave::find_swift_metadata(binary, "PlayerManager");
 A plugin can declare an Objective-C method hook directly:
 
 ```cpp
-void init(void) {
+extern "C" void init(void) {
     replace_function(match("Player::Damage"), replacement, x0);
     hook_objc_method("PlayerManager", "update:", on_update, x0, x1);
 }

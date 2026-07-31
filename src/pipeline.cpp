@@ -631,7 +631,7 @@ void run_patch_script(const std::filesystem::path &script_path) {
                 throw std::runtime_error("cannot create generated patch plugin");
             output << "#include \"armcave.h\"\n";
             output << "#include " << cpp_literal(std::filesystem::absolute(source).string()) << "\n";
-            output << "void init(void) {\n";
+            output << "extern \"C\" void init(void) {\n";
             std::string registers = register_list(hook.register_args);
             auto suffix = registers.empty() ? std::string() : ", " + registers;
             if (!hook.objc_class.empty() && !hook.selector.empty()) {

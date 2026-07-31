@@ -72,7 +72,7 @@ extern "C" int replacement(int value) {
     return value + 1;
 }
 
-void init(void) {
+extern "C" void init(void) {
     hook_replace(0x100000498, replacement, w0);
 }
 ```
@@ -162,7 +162,7 @@ extern "C" void on_tick(void *object) {
     read_mem<void *>(reinterpret_cast<addr_t>(object));
 }
 
-void init(void) {
+extern "C" void init(void) {
     hook_detour_signature(
         "FD 7B BF A9 ?? ?? ?? ?? FD 03 00 91 ?? ?? ?? ??",
         on_tick, x0);
@@ -187,7 +187,7 @@ extern "C" void replacement(void *player) {
     target_update(player);
 }
 
-void init(void) {
+extern "C" void init(void) {
     hook_replace_symbol("_ZN6Player6updateEv", replacement, x0);
 }
 ```
@@ -251,7 +251,7 @@ auto swift = armcave::find_swift_metadata(binary, "PlayerManager");
 插件只需要声明：
 
 ```cpp
-void init(void) {
+extern "C" void init(void) {
     replace_function(match("Player::Damage"), replacement, x0);
     hook_objc_method("PlayerManager", "update:", on_update, x0, x1);
 }
