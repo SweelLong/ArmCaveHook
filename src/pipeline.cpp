@@ -124,6 +124,16 @@ static std::string make_plugin_seg_name(const std::string &plugin,
     return base;
 }
 
+static bool has_plugin_segment(BinaryImage &binary, const std::string &name) {
+    std::string target = seg_name(binary, name);
+    if (binary.is_macho()) {
+        for (const auto &segment : binary.segments())
+            if (segment.name == target) return true;
+        return false;
+    }
+    return binary.section(target) != nullptr;
+}
+
 static std::vector<uint8_t> patch_payload(const HookAction &action) {
     if (action.kind == "patch_asm") {
         std::string asm_text = action.data;
@@ -277,6 +287,32 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         }
     }
 
+    std::set<std::string> used_segments;
+    std::vector<SegmentPlan> segment_plans;
+    for (auto &cp : compiled) {
+        if (!cp.has_hooks) continue;
+        std::string prefix = cp.requested_segment.empty()
+            ? cp.blob.default_segment : cp.requested_segment;
+        cp.segment_name = make_plugin_seg_name(cp.spec->name, prefix, used_segments);
+        for (auto &action : cp.blob.declarations)
+            if (action.kind == "hook_replace" || action.kind == "hook_detour")
+                action.segment = cp.segment_name;
+    }
+
+    for (const auto &cp : compiled) {
+        if (!cp.has_hooks) continue;
+        std::string conflict;
+        if (has_plugin_segment(binary, cp.segment_name))
+            conflict = seg_name(binary, cp.segment_name);
+        else if (cp.blob.has_writable_extra &&
+                 has_plugin_segment(binary, cp.segment_name + "_data"))
+            conflict = seg_name(binary, cp.segment_name + "_data");
+        if (!conflict.empty())
+            throw std::runtime_error(
+                cp.spec->name + ": input already contains plugin segment " +
+                conflict + "; use an unpatched original binary");
+    }
+
     for (auto *action : direct) {
         auto payload = patch_payload(*action);
         if (action->has_expected && !matches_expected(output_path, *action, payload)) {
@@ -309,18 +345,6 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         if (replace_sites.count(va))
             throw std::runtime_error("detour and replace overlap at 0x" +
                                      std::to_string(va));
-
-    std::set<std::string> used_segments;
-    std::vector<SegmentPlan> segment_plans;
-    for (auto &cp : compiled) {
-        if (!cp.has_hooks) continue;
-        std::string prefix = cp.requested_segment.empty()
-            ? cp.blob.default_segment : cp.requested_segment;
-        cp.segment_name = make_plugin_seg_name(cp.spec->name, prefix, used_segments);
-        for (auto &action : cp.blob.declarations)
-            if (action.kind == "hook_replace" || action.kind == "hook_detour")
-                action.segment = cp.segment_name;
-    }
 
     std::set<std::string> verified_segments;
     std::set<std::string> verified_data_segments;
