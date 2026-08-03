@@ -28,7 +28,7 @@ cd ArmCaveHook
 
 执行前先在 `armcave.conf` 中将目标 profile 设置为 `enable = true`。
 
-`ArmCaveHook-Arcplugins` 是独立的插件子模块。Apple 和 Android 的 `arc_scene_loader.cpp` 仍是两个平台独立的插件源文件，分别拥有自己的 ABI、地址、数据布局和 hook 声明；NCP 时间线的公共结构体与存储 helper 位于子模块的 `plugins/common/arc_scene_common.h`。Apple loader 额外支持 NCP 运行时轨道类型事件 `ncptracktype(timestamp, type)`。
+`ArmCaveHook-Arcplugins` 是独立的插件子模块。Apple 和 Android 的 `arc_scene_loader.cpp` 仍是两个平台独立的插件源文件，分别拥有自己的 ABI、地址、数据布局和 hook 声明；Apple 侧可复用的结构体与 NCP 时间线 helper 位于子模块的 `plugins/apple/include/common/arc_common.h`，Apple 其他插件可以直接复用。Apple loader 额外支持 NCP 运行时轨道类型事件 `ncptracktype(timestamp, type)`。
 
 也可以直接构建命令行工具：
 
