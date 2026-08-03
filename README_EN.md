@@ -30,7 +30,8 @@ Before running the script, set the desired profile to `enable = true` in `armcav
 
 `ArmCaveHook-Arcplugins` is an independent plugin submodule. The Apple and Android
 `arc_scene_loader.cpp` files are completely independent plugin sources with separate ABIs,
-addresses, data layouts, and hook declarations. Neither source includes the other.
+addresses, data layouts, and hook declarations. Neither source includes the other. The Apple
+loader additionally supports the NCP runtime event `ncptracktype(timestamp, type)`.
 
 The command-line tool can also be built directly:
 
@@ -249,6 +250,18 @@ auto fingerprint = armcave::aarch64::cfg_fingerprint(graph);
 CFG fingerprints can be stored with user rules and call-site anchors to confirm candidates and
 build migration rules after a target binary update.
 
+The project can later add an auxiliary locator based on string features and an LLM: search for a
+stable string, follow its Xrefs to find the referencing instructions and enclosing function range,
+then provide the complete bytes from that candidate range to the LLM. Given the known post-patch
+bytes for the target version, the instruction context, and the function range, the LLM can infer the
+specific patch address. The existing Patch tool would still perform the actual modification. This
+avoids requiring an exact cross-version match for the entire function: finding the exact address is
+reduced to finding an approximate region, while the LLM resolves the address within that region.
+Repeated, localized, or ambiguous strings should preserve all candidate functions and context; any
+LLM-produced address must be checked against the original bytes, instruction boundaries, and
+expected bytes. Patching must be skipped when validation fails, with candidates and failure reasons
+reported.
+
 Function-level IR is built on top of the CFG and stores the entry, basic blocks, call targets,
 constant references, string references, return points, and a fingerprint:
 
@@ -421,6 +434,7 @@ Build requirements:
 - [x] Plugin branch veneers and independent code/data segments
 - [x] Duplicate-symbol isolation across plugins
 - [x] Independent Apple and Android scene loaders
+- [x] Apple NCP runtime track-type switching
 - [x] Multi-profile build configuration and independent plugin directories
 - [x] Dynamic symbols, PLT/GOT, byte signatures, and CFG fingerprints
 - [x] Function-level IR, function discovery, call/constant/string/return indexes
@@ -433,6 +447,7 @@ Build requirements:
 
 - [ ] Document Mach-O code-signature invalidation and codesign/ldid/enterprise re-signing workflows
 - [ ] Add honest byte-signature stability guidance and a signature survival estimator
+- [ ] Extract candidate bytes from string Xrefs, call an LLM to infer cross-version patch addresses, and validate and apply them through the Patch tool
 - [ ] Provide an optional lightweight C++ toolkit for plugins
 - [ ] Expand Android ELF coverage and documentation for DT_RELR and eh_frame
 

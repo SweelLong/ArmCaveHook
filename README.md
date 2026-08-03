@@ -28,7 +28,7 @@ cd ArmCaveHook
 
 执行前先在 `armcave.conf` 中将目标 profile 设置为 `enable = true`。
 
-`ArmCaveHook-Arcplugins` 是独立的插件子模块。Apple 和 Android 的 `arc_scene_loader.cpp` 是两个完全独立的插件源文件，分别拥有自己的 ABI、地址、数据布局和 hook 声明，不通过源码包含共享实现。
+`ArmCaveHook-Arcplugins` 是独立的插件子模块。Apple 和 Android 的 `arc_scene_loader.cpp` 是两个完全独立的插件源文件，分别拥有自己的 ABI、地址、数据布局和 hook 声明，不通过源码包含共享实现。Apple loader 额外支持 NCP 运行时轨道类型事件 `ncptracktype(timestamp, type)`。
 
 也可以直接构建命令行工具：
 
@@ -224,6 +224,14 @@ auto fingerprint = armcave::aarch64::cfg_fingerprint(graph);
 CFG fingerprint 可以和用户自己的版本规则、调用点锚点及签名一起保存，用于升级目标二进制
 后的候选确认和迁移规则生成。
 
+后续可以增加基于字符串特征和 LLM 的辅助定位流程：先搜索稳定字符串，再通过 Xref 找到
+引用它的指令和所属函数范围，将候选范围内的完整字节码交给 LLM 分析。LLM 根据目标版本
+已知的 patch 后字节码、指令上下文和函数范围推断具体 patch 地址，最后仍由现有 Patch 工具
+执行修改。这样不需要跨版本精确匹配整个函数的字节码，只需把“寻找精确地址”降级为“寻找
+大致区域”，再利用 LLM 完成区域内的地址判断。字符串重复、被本地化或 Xref 不唯一时，
+应保留候选函数和上下文信息；LLM 输出的地址还必须经过原始字节、指令边界和 expected bytes
+校验，校验失败时跳过 patch，并输出候选及失败原因。
+
 函数级 IR 建立在 CFG 之上，统一保存入口、基本块、调用目标、常量引用、字符串引用、返回点和 fingerprint：
 
 ```cpp
@@ -379,6 +387,7 @@ plugins = ArmCaveHook-Arcplugins/plugins/apple
 - [x] 插件 branch veneer 和独立代码/数据段
 - [x] 多插件同名符号隔离
 - [x] Apple/Android 独立 scene loader
+- [x] Apple NCP 运行时轨道类型切换
 - [x] 多 profile 构建配置和独立插件目录
 - [x] 动态符号、PLT/GOT、字节签名和 CFG fingerprint 定位能力
 - [x] 函数级 IR、函数发现、调用/常量/字符串/返回点索引
@@ -391,6 +400,7 @@ plugins = ArmCaveHook-Arcplugins/plugins/apple
 
 - [ ] 补充 Mach-O 代码签名失效、codesign/ldid/企业证书重签名流程与提示
 - [ ] 增加字节签名稳定性说明和签名存活率估算工具
+- [ ] 基于字符串 Xref 提取候选字节码，调用 LLM 推断跨版本 Patch 地址并交由 Patch 工具校验执行
 - [ ] 提供可选的轻量级 C++ 插件工具集
 - [ ] 补充 Android ELF 的 DT_RELR、eh_frame 等覆盖度与文档
 
