@@ -12,13 +12,13 @@
   <img src="https://img.shields.io/badge/Docs-English%20%7C%20中文-brightgreen?logo=readthedocs" alt="Docs">
 </p>
 
-中文 | [English](README_EN.md)
+English | [简体中文](README_CN.md)
 
-ArmCaveHook 是面向 AArch64 的静态二进制 patch 框架。它把 C++ 插件编译成独立的代码段和数据段，分析原始指令，生成 trampoline，处理 relocation，最后写回 64 位 Mach-O 或 ELF 文件。
+ArmCaveHook is an AArch64 static binary patch framework. It compiles C++ plugins into independent code and data segments, analyzes original instructions, generates trampolines, resolves relocations, and writes the result back to 64-bit Mach-O or ELF binaries.
 
-目标架构只有 ARM64/AArch64。Apple 使用 64 位 Mach-O，Android 使用 64 位 ELF；不提供 x86、32 位 ARM 或其他目标架构支持。宿主机可以是 macOS、Linux 或 Windows，插件始终按 AArch64 目标编译。
+The only supported target architecture is ARM64/AArch64. Apple targets use 64-bit Mach-O and Android targets use 64-bit ELF. x86, 32-bit ARM, and other target architectures are not supported.
 
-## 快速开始
+## Quick Start
 
 ```bash
 git clone --recursive https://github.com/SweelLong/ArmCaveHook.git
@@ -26,18 +26,16 @@ cd ArmCaveHook
 ./build.sh
 ```
 
-执行前先在 `armcave.conf` 中将目标 profile 设置为 `enable = true`。
+Before running the script, set the desired profile to `enable = true` in `armcave.conf`.
 
-`ArmCaveHook-Arcplugins` 是独立的插件子模块。Apple 和 Android 的 `arc_scene_loader.cpp` 仍是两个平台独立的插件源文件，分别拥有自己的 ABI、地址、数据布局和 hook 声明；Apple 侧可复用的结构体与 NCP 时间线 helper 位于子模块的 `plugins/apple/include/common/arc_common.h`，Apple 其他插件可以直接复用。Apple loader 额外支持 NCP 运行时轨道类型事件 `ncptracktype(timestamp, type)`。
-
-也可以直接构建命令行工具：
+The command-line tool can also be built directly:
 
 ```bash
 cmake -S . -B build
 cmake --build build -j2
 ```
 
-## 架构
+## Architecture
 
 ```text
 Plugin .cpp
@@ -49,7 +47,7 @@ Clang AArch64 object
     +-- symbol and PLT/GOT resolver
     +-- byte signature resolver
     +-- AArch64 decoder and CFG analyzer
-    +-- Function IR and function discovery
+    +-- function IR and function discovery
     +-- instruction relocator
     +-- Mach-O chained fixups and Apple metadata
     +-- patch.toml script layer
@@ -59,11 +57,14 @@ Clang AArch64 object
 Patched ARM64 binary
 ```
 
-框架保留当前内置的 Mach-O/ELF 解析与写回实现，不强制依赖 LIEF 或 LLVM 二进制解析库。外部后端可以作为后续适配参考，但不会改变当前插件格式和 ARM64 patch pipeline。
+The framework keeps its built-in Mach-O/ELF parser and writer. It does not require LIEF or
+LLVM as a binary parsing backend, and the current plugin format and ARM64 patch pipeline remain
+unchanged.
 
-## 最小插件
+## Minimal Plugin
 
-插件只需要包含 `armcave.h`，声明 handler，并在 `init(void)` 中声明 patch：
+A plugin only needs to include `armcave.h`, define a handler, and declare its patch in
+`init(void)`:
 
 ```cpp
 #include "armcave.h"
@@ -77,85 +78,101 @@ extern "C" void init(void) {
 }
 ```
 
-框架负责插件独立编译、符号映射、段名冲突处理、handler wrapper、代码段和数据段容量规划。插件不需要手写 cave、保存寄存器、回跳或 relocation。
+The framework handles independent plugin compilation, symbol mapping, segment-name conflicts,
+handler wrappers, code/data capacity planning, trampolines, and relocation. Plugins do not
+need to write cave code, save registers, return to the original function, or relocate copied
+instructions manually.
 
 ## Hook API
 
-| API | 作用 |
+| API | Description |
 |---|---|
-| `hook_replace(addr, handler, ...)` | 调用 handler 后直接返回，不执行被覆盖的原逻辑。 |
-| `hook_detour(addr, handler, ...)` | 调用 handler，搬迁被覆盖的原指令，然后回到原函数。 |
-| `hook_replace_signature(pattern, handler, ...)` | 用唯一 AArch64 字节签名定位目标后替换。 |
-| `hook_detour_signature(pattern, handler, ...)` | 用唯一 AArch64 字节签名定位目标后 detour。 |
-| `hook_replace_symbol(symbol, handler, ...)` | 按唯一目标函数符号或可反解 C++ 名称替换。 |
-| `hook_detour_symbol(symbol, handler, ...)` | 按唯一目标函数符号或可反解 C++ 名称 detour。 |
-| `replace_function(match(symbol), handler, ...)` | `hook_replace_symbol` 的函数级 DSL 写法。 |
-| `detour_function(match(symbol), handler, ...)` | `hook_detour_symbol` 的函数级 DSL 写法。 |
-| `hook_objc_method(class_name, selector, handler, ...)` | 解析 Apple Objective-C method metadata 后替换 IMP。 |
-| `hook_detour_objc_method(class_name, selector, handler, ...)` | 解析 Apple Objective-C method metadata 后 detour IMP。 |
-| `patch_asm(addr, "...")` | 写入编译后的 AArch64 指令。 |
-| `patch_asm(addr, "...", "expected")` | 仅在原始指令序列匹配 expected 时写入。 |
-| `bind_func_by_sym(ret, name, args, symbol)` | 绑定目标中的普通符号、C++ 符号或导入函数。 |
-| `bind_func_by_addr(ret, name, args, addr)` | 绑定固定地址；框架会处理生成的 `B/BL` relocation。 |
-| `bind_obj_by_sym(type, name, symbol)` | 绑定目标全局对象或静态对象。 |
-| `resolve_addr(va)` | 生成目标数据地址引用，处理 ADRP/PAGEOFF12 relocation。 |
-| `read_mem<T>(addr)` / `write_mem<T>(addr, value)` | 访问目标内存。 |
-| `armcave_timer_now_ms(...)` | 按目标计时器布局读取毫秒时间并处理缺省值。 |
-| `resolve_vfunc(obj, offset)` | 读取对象虚表函数。 |
-| `read_typeinfo(obj)` | 读取 Itanium C++ ABI typeinfo。 |
-| `armcave_string` / `armcave_string_make` / `armcave_string_data` / `armcave_string_size` / `armcave_string_destroy` | 按目标格式自动处理 Apple 或 Android 的 24 字节字符串 ABI。 |
-| `armcave_json_value(json, key, out, size)` | 从数字 key 的 JSON 对象中读取字符串。 |
-| `armcave_json_or_integer(json, key, label, size, fallback)` | 优先读取 JSON 标签，否则格式化整数。 |
-| `armcave_json_copy_or_integer(json, key, out, size)` | 使用 JSON 标签或整数回退直接写入公共文本缓冲区。 |
-| `armcave_asset_reader` / `armcave_asset_load` / `armcave_asset_release` | 跨平台资源读取生命周期接口，平台 adapter 自己实现 open/close。 |
-| `armcave_asset_binary_reader` / `armcave_asset_binary_load` | 复用二进制资源的长度检查、分段读取、分配和释放流程。 |
-| `armcave_load_rating_list(reader, path, key, out, size)` | 通过平台资源 adapter 读取 JSON 并按整数键复制标签，找不到时回退为数字。 |
+| `hook_replace(addr, handler, ...)` | Calls the handler and returns without executing the overwritten original logic. |
+| `hook_detour(addr, handler, ...)` | Calls the handler, relocates the overwritten original instructions, and resumes the original function. |
+| `hook_replace_signature(pattern, handler, ...)` | Finds one unique AArch64 byte signature and replaces the matched location. |
+| `hook_detour_signature(pattern, handler, ...)` | Finds one unique AArch64 byte signature and detours the matched location. |
+| `hook_replace_symbol(symbol, handler, ...)` | Replaces one unique target symbol or demangled C++ function. |
+| `hook_detour_symbol(symbol, handler, ...)` | Detours one unique target symbol or demangled C++ function. |
+| `replace_function(match(symbol), handler, ...)` | Function-level DSL spelling of `hook_replace_symbol`. |
+| `detour_function(match(symbol), handler, ...)` | Function-level DSL spelling of `hook_detour_symbol`. |
+| `hook_objc_method(class_name, selector, handler, ...)` | Resolves Apple Objective-C metadata and replaces the method IMP. |
+| `hook_detour_objc_method(class_name, selector, handler, ...)` | Resolves Apple Objective-C metadata and detours the method IMP. |
+| `patch_asm(addr, "...")` | Writes assembled AArch64 instructions. |
+| `patch_asm(addr, "...", "expected")` | Writes only when the original instruction sequence matches `expected`. |
+| `bind_func_by_sym(ret, name, args, symbol)` | Binds a normal, C++, or imported function symbol. |
+| `bind_func_by_addr(ret, name, args, addr)` | Binds a fixed target address and resolves generated `B/BL` relocations. |
+| `bind_obj_by_sym(type, name, symbol)` | Binds a global or static target object. |
+| `resolve_addr(va)` | Generates a target data-address reference with ADRP/PAGEOFF12 relocation. |
+| `read_mem<T>(addr)` / `write_mem<T>(addr, value)` | Reads or writes target memory. |
+| `armcave_timer_now_ms(...)` | Reads milliseconds using a target timer layout and fallback policy. |
+| `resolve_vfunc(obj, offset)` | Reads a function pointer from an object's vtable. |
+| `read_typeinfo(obj)` | Reads Itanium C++ ABI typeinfo. |
+| `armcave_string` / `armcave_string_make` / `armcave_string_data` / `armcave_string_size` / `armcave_string_destroy` | Automatically handles the Apple or Android 24-byte string ABI selected for the target. |
+| `armcave_json_value(json, key, out, size)` | Reads a string from a JSON object using an integer key. |
+| `armcave_json_or_integer(json, key, label, size, fallback)` | Uses a JSON label when available and otherwise formats the integer key. |
+| `armcave_json_copy_or_integer(json, key, out, size)` | Copies a JSON label or numeric fallback into a platform-neutral text buffer. |
+| `armcave_asset_reader` / `armcave_asset_load` / `armcave_asset_release` | Cross-platform asset lifetime API with platform-owned open/close adapters. |
+| `armcave_asset_binary_reader` / `armcave_asset_binary_load` | Reuses binary-asset length checks, chunked reads, allocation, and release. |
+| `armcave_load_rating_list(reader, path, key, out, size)` | Loads JSON through a platform adapter, copies the integer-key label, and falls back to the number. |
 
-寄存器参数会由框架生成 wrapper，按声明顺序移动到 `x0` 至 `x7`：
+Register arguments are copied by a generated wrapper into standard AArch64 argument registers:
 
 ```cpp
 hook_detour(0x10087038c, on_tick, x20, w21);
 ```
 
-`hook_detour` 会根据 cave 距离自动覆盖 4、12 或 20 字节，并搬迁完整覆盖窗口。插件 handler 不需要知道原始窗口大小。
+The handler does not need to know the size of the overwritten window.
 
-## AArch64 重定位
+## Branches, Far Jumps, and Relocation
 
-重定位器支持：
+The default hook-site transfer is a non-linking AArch64 `B` instruction. A `B` uses a signed
+26-bit instruction offset and reaches approximately 128 MiB in either direction.
 
-- `B`、`BL`
-- `B.cond`
-- `CBZ`、`CBNZ`
-- `TBZ`、`TBNZ`
-- `ADR`、`ADRP`
-- 常见 `LDR` literal 形式
-- 基本块内部目标重映射
-
-跳转序列按目标距离选择：
+The framework automatically selects a larger sequence when the destination is farther away:
 
 ```text
-4 bytes:  B/BL target
-12 bytes: ADRP x16, target; ADD x16, x16, #pageoff; BR/BLR x16
-20 bytes: MOVZ/MOVK x16, absolute; BR/BLR x16
+4 bytes:  B target
+12 bytes: ADRP x16, target; ADD x16, x16, #pageoff; BR x16
+20 bytes: MOVZ/MOVK x16, absolute; BR x16
 ```
 
-条件跳转越界时会反转条件并接绝对跳转。`ADR`、`ADRP` 和 literal load 越界时会改写为绝对地址或寄存器寻址序列。插件自身 `ARM64_RELOC_BRANCH26` 越界时，框架在插件文本中生成 veneer，并按最坏大小预留空间。
+For a linking call, the same selection uses `BL` within range and `BLR` in the indirect forms.
+The hook window automatically expands to 4, 12, or 20 bytes and fills unused bytes with NOPs.
+When a detour window expands, the original instructions are relocated before execution resumes.
 
-## 版本无关定位
+The AArch64 relocator supports:
 
-框架不会把旧版本的固定地址自动猜成新版本地址。插件必须为每个目标位置声明定位方式：
+- `B` and `BL`
+- `B.cond`
+- `CBZ` and `CBNZ`
+- `TBZ` and `TBNZ`
+- `ADR` and `ADRP`
+- Common literal `LDR` forms
+- Basic-block internal target remapping
 
-| 定位方式 | 适用场景 | 版本迁移能力 |
+For copied plugin code, an out-of-range `ARM64_RELOC_BRANCH26` automatically receives a local
+veneer. Plugin text and data capacity are reserved for the worst-case veneer size before the
+segments are created.
+
+On Mach-O hook caves, the entry sequence also handles PAC return-address cleanup before saving
+the frame when required by the target.
+
+## Version-Independent Location
+
+The framework does not guess a new address from an old fixed address. A plugin must declare how
+each target location is found:
+
+| Locator | Use case | Version migration |
 |---|---|---|
-| 固定地址 | 已知版本、内部函数没有符号 | 只适用于相同布局版本 |
-| 目标符号 | 导出符号、C++ 符号、导入函数 | 通常可跨版本 |
-| Objective-C 类名 + selector | Apple Objective-C 方法 | 通常可跨版本 |
-| 唯一字节签名 | 没有稳定符号的 AArch64 函数入口 | 可跨代码布局变化的版本 |
-| expected 指令 | 保护固定地址 patch | 只做校验，不负责迁移 |
+| Fixed address | Known version, no symbol for an internal function | Same layout only |
+| Target symbol | Exported, C++, or imported function | Usually cross-version |
+| Objective-C class + selector | Apple Objective-C method | Usually cross-version |
+| Unique byte signature | AArch64 entry without a stable symbol | Survives code layout changes |
+| Expected instruction | Guard for a fixed-address patch | Validation only, no migration |
 
-### 字节签名
+### Byte Signatures
 
-没有稳定符号时使用 `hook_replace_signature` 或 `hook_detour_signature`：
+When no stable symbol is available, use `hook_replace_signature` or `hook_detour_signature`:
 
 ```cpp
 extern "C" void on_tick(void *object) {
@@ -169,16 +186,18 @@ extern "C" void init(void) {
 }
 ```
 
-签名字节之间用空格、逗号或分号分隔；`?`、`??` 和 `*` 表示通配字节。AArch64 的
-`BL`、`B`、`ADR`、`ADRP` 和 literal load 中包含版本相关的 PC-relative immediate，
-签名通常应该把这些字节写成通配符，同时保留函数序言、寄存器操作和返回路径等稳定字节。
+Signature bytes may be separated by spaces, commas, or semicolons. `?`, `??`, and `*` are
+wildcards. AArch64 `BL`, `B`, `ADR`, `ADRP`, and literal-load instructions contain
+version-dependent PC-relative immediates. Those bytes should normally be wildcarded while stable
+function-prologue, register-operation, and return-path bytes remain in the signature.
 
-签名只扫描可执行 section，并且必须得到一个结果：零个结果表示签名失效，多个结果表示
-签名不够具体，两种情况都会停止 patch，不会随机选择地址。
+Signatures scan executable sections and must produce exactly one match. Zero matches mean the
+signature is stale; multiple matches mean it is not specific enough. Both cases stop the patch and
+never choose an arbitrary location.
 
-### 符号定位
+### Symbol Location
 
-目标保留符号时优先使用符号 API：
+Prefer symbol APIs when the target keeps symbols:
 
 ```cpp
 bind_func_by_sym(void, target_update, (void *), "_ZN6Player6updateEv");
@@ -192,47 +211,54 @@ extern "C" void init(void) {
 }
 ```
 
-`bind_func_by_addr`、`hook_replace(addr, ...)` 和 `hook_detour(addr, ...)` 仍然是固定地址
-API。它们不会自动寻找新版本位置；插件中的目标函数地址、字段偏移和 ABI 变化也必须单独
-处理。
+`bind_func_by_addr`, `hook_replace(addr, ...)`, and `hook_detour(addr, ...)` remain fixed-address
+APIs. They do not search for a new-version location. Target-function addresses, object field
+offsets, and ABI changes in a plugin must also be handled separately.
 
-### 指令校验
+### Expected Bytes
 
-`expected` 用于防止错误版本被修改：
+`expected` protects a fixed-address patch from being applied to the wrong version:
 
 ```cpp
 patch_asm(0x100500000, "nop", ".long 0x34000428");
 ```
 
-如果原始指令不是 `0x34000428`，框架会报告 mismatch 并停止该 patch。它是版本保护机制，
-不是地址迁移机制；需要迁移时应改用符号、签名或版本规则。
+If the original instruction is not `0x34000428`, the framework reports a mismatch and stops that
+patch. This is a version guard, not an address migration mechanism; use symbols, signatures, or
+version rules for migration.
 
-### 迁移流程
+### Migration Flow
 
-每次 patch 时，框架会读取当前输入二进制，按 Objective-C、符号、Swift 名称或唯一签名
-解析实际地址，再在该地址规划 hook window、生成 trampoline 并执行 AArch64 relocation。CFG
-和 Function IR fingerprint 可以保存到用户自己的版本规则中，用于确认候选函数或生成新的
-签名，但当前不会单独根据 fingerprint 自动改写固定地址。
+For each patch, the framework reads the current input binary, resolves the actual address through
+Objective-C metadata, symbols, Swift names, or a unique signature, then plans the hook window,
+generates the trampoline, and runs AArch64 relocation at that resolved address. CFG and Function IR
+fingerprints can be stored in user version rules to confirm candidates or generate new signatures;
+the framework does not currently rewrite fixed addresses from a fingerprint by itself.
 
-框架还提供 AArch64 CFG 分析 API：
+The framework also exposes AArch64 CFG analysis:
 
 ```cpp
 auto graph = armcave::aarch64::analyze_cfg(code, base, entry);
 auto fingerprint = armcave::aarch64::cfg_fingerprint(graph);
 ```
 
-CFG fingerprint 可以和用户自己的版本规则、调用点锚点及签名一起保存，用于升级目标二进制
-后的候选确认和迁移规则生成。
+CFG fingerprints can be stored with user rules and call-site anchors to confirm candidates and
+build migration rules after a target binary update.
 
-后续可以增加基于字符串特征和 LLM 的辅助定位流程：先搜索稳定字符串，再通过 Xref 找到
-引用它的指令和所属函数范围，将候选范围内的完整字节码交给 LLM 分析。LLM 根据目标版本
-已知的 patch 后字节码、指令上下文和函数范围推断具体 patch 地址，最后仍由现有 Patch 工具
-执行修改。这样不需要跨版本精确匹配整个函数的字节码，只需把“寻找精确地址”降级为“寻找
-大致区域”，再利用 LLM 完成区域内的地址判断。字符串重复、被本地化或 Xref 不唯一时，
-应保留候选函数和上下文信息；LLM 输出的地址还必须经过原始字节、指令边界和 expected bytes
-校验，校验失败时跳过 patch，并输出候选及失败原因。
+The project can later add an auxiliary locator based on string features and an LLM: search for a
+stable string, follow its Xrefs to find the referencing instructions and enclosing function range,
+then provide the complete bytes from that candidate range to the LLM. Given the known post-patch
+bytes for the target version, the instruction context, and the function range, the LLM can infer the
+specific patch address. The existing Patch tool would still perform the actual modification. This
+avoids requiring an exact cross-version match for the entire function: finding the exact address is
+reduced to finding an approximate region, while the LLM resolves the address within that region.
+Repeated, localized, or ambiguous strings should preserve all candidate functions and context; any
+LLM-produced address must be checked against the original bytes, instruction boundaries, and
+expected bytes. Patching must be skipped when validation fails, with candidates and failure reasons
+reported.
 
-函数级 IR 建立在 CFG 之上，统一保存入口、基本块、调用目标、常量引用、字符串引用、返回点和 fingerprint：
+Function-level IR is built on top of the CFG and stores the entry, basic blocks, call targets,
+constant references, string references, return points, and a fingerprint:
 
 ```cpp
 #include "aarch64/function_ir.h"
@@ -243,11 +269,16 @@ for (auto call : function.calls) {
 }
 ```
 
-`discover_functions(binary)` 会优先使用入口和定义符号收集函数，再为每个函数构建 IR。IR 不依赖插件，版本迁移规则可以直接保存 `function.fingerprint`、调用目标和引用集合。
+`discover_functions(binary)` starts with the entry point and defined symbols, then builds an IR
+for each discovered function. The IR is framework-owned, so version migration rules can store
+the function fingerprint, call targets, and reference sets without duplicating analysis in a plugin.
 
-Apple parser 会识别 `LC_DYLD_CHAINED_FIXUPS`，遍历常见 ARM64/ARM64e page chain，解析 rebase、bind、import ordinal、symbol、addend、pointer format 和 authenticated pointer。添加插件段时会同步调整 chained-fixups 数据在 `__LINKEDIT` 中的文件偏移，并保留原始链数据。
+The Apple parser recognizes `LC_DYLD_CHAINED_FIXUPS`, walks common ARM64/ARM64e page chains, and
+decodes rebases, binds, import ordinals, symbols, addends, pointer formats, and authenticated
+pointers. Adding plugin segments adjusts the chained-fixups file offset inside `__LINKEDIT` and
+preserves the original chain data.
 
-Apple metadata API：
+Apple metadata APIs:
 
 ```cpp
 #include "apple_metadata.h"
@@ -256,7 +287,7 @@ auto method = armcave::find_objc_method(binary, "PlayerManager", "update:");
 auto swift = armcave::find_swift_metadata(binary, "PlayerManager");
 ```
 
-插件只需要声明：
+A plugin can declare an Objective-C method hook directly:
 
 ```cpp
 extern "C" void init(void) {
@@ -265,11 +296,13 @@ extern "C" void init(void) {
 }
 ```
 
-Objective-C method list、class list、category list 和 IMP 会被框架解析。Swift API 用于枚举 `__swift5_*` 反射字符串和 metadata 引用；Swift 可执行函数仍要求符号或签名定位。
+The framework parses Objective-C method lists, class lists, category lists, and IMP pointers.
+The Swift API enumerates reflection strings and metadata references in `__swift5_*`; executable
+Swift functions still require a symbol or byte signature locator.
 
-## 插件 SDK
+## Plugin SDK
 
-`armcave.h` 自动包含无运行时依赖的公共 SDK `include/armcave_sdk.h`，插件不必重复实现这些函数：
+`armcave.h` includes the runtime-free public SDK in `include/armcave_sdk.h` for common plugin operations:
 
 ```cpp
 armcave_text_length(text);
@@ -283,20 +316,22 @@ armcave_safe_asset_path(path);
 armcave_grow_capacity(current, required, initial, result);
 ```
 
-这些函数是 `static inline`，会直接进入插件代码段，不引入 libc 或框架运行时依赖。
+These functions are `static inline`, so they do not introduce a framework runtime dependency or
+libc requirement into a plugin.
 
-Apple 和 Android 共用同一套 hook、定位、JSON 和文本 API。平台插件只适配各自的资源读取、
-对象布局、字符串 ABI 和 hook 地址；`armcave_json_copy_or_integer` 负责跨平台 JSON 标签
-查找与整数回退，`armcave_load_rating_list` 负责复用资源读取、解析和释放流程；这些函数
-都不包含任何目标二进制字段或地址。
+Apple and Android share the same hook, locator, JSON, and text APIs. A platform plugin keeps its
+own asset loading, object layout, string ABI, and hook address; `armcave_json_copy_or_integer`
+provides platform-neutral JSON lookup and numeric fallback, while `armcave_load_rating_list`
+reuses the asset loading, parsing, and release flow. None of these helpers contains target-binary
+fields or addresses.
 
-资源读取使用 `armcave_asset_reader` 和 `armcave_asset_binary_reader` 抽象。公共逻辑只处理
-opaque storage 和文本指针；目标函数绑定和 manager 获取仍留在插件 adapter 内部，字符串布局
-由 `armcave_string` 根据目标格式自动选择。
+Asset loading uses `armcave_asset_reader` and `armcave_asset_binary_reader`. Shared code sees only
+opaque storage and text pointers; target-function bindings and manager lookup remain in each plugin
+adapter, while `armcave_string` selects the target string layout automatically.
 
 ## Patch Script
 
-简单替换可以不写 `init` 和 hook 宏，使用 `patch.toml`：
+Simple replacements can use `patch.toml` without writing `init` or hook macros:
 
 ```toml
 [target]
@@ -316,41 +351,47 @@ handler = "on_tick"
 registers = ["x0"]
 ```
 
-`damage.cpp` 只定义 handler；框架会生成临时插件、解析唯一符号、C++ demangled name 或
-唯一签名、生成 wrapper，并复用同一套 segment、trampoline 和 relocation pipeline。`signature`
-用于版本无关的 hook 点定位，`class` 和 `selector` 用于 Objective-C 方法。运行：
+`damage.cpp` only defines the handler. The framework generates a temporary plugin, resolves a
+unique symbol, demangled C++ name, or unique signature, generates the wrapper, and reuses the same
+segment, trampoline, and relocation pipeline. `signature` locates a hook across code-layout
+versions; `class` and `selector` locate Objective-C methods:
 
 ```bash
 ./build/armcave --script patch.toml
 ```
 
-## 段和数据
+## Segments and Data
 
-可以通过 `SEGMENT_NAME` 请求稳定的逻辑段名前缀：
+Plugins can request a stable logical segment prefix with `SEGMENT_NAME`:
 
 ```cpp
 #define SEGMENT_NAME gameplay
 ```
 
-框架会为每个插件生成独立的代码段。相同逻辑段名前缀发生冲突时自动追加稳定短后缀。插件的静态变量、初始化数据和 zerofill 数据进入独立的 RW 数据段；代码和常量进入 R-X 段。不同插件可以同时使用同名 `replacement`、`init` 或 handler，不会互相覆盖。
+The framework creates an independent code segment for every plugin. If logical names collide,
+it adds a stable short suffix. Static variables, initialized data, and zerofill data are placed
+in an independent writable data segment; code and constants remain in an R-X segment. Different
+plugins may use the same `replacement`, `init`, or handler names without symbol collisions.
 
-每个插件单独编译、单独解析 object、单独维护符号表和 relocation map。Hook handler 必须在
-自己的插件 object 中解析成功；代码段或数据段重名会直接失败，不会回退到其他插件的符号
-或状态。插件可以挂到同一个目标地址，但 dispatcher 只连接各自段内的 handler。
+Each plugin is compiled and parsed independently with its own symbol table and relocation map. A
+hook handler must resolve inside its own plugin object; duplicate code or data segment names fail
+instead of falling back to another plugin's symbols or state. Multiple plugins may target the same
+address, but the dispatcher only connects handlers from their respective segments.
 
-## 诊断
+## Diagnostics
 
-失败和 expected mismatch 会输出一行结构化 JSON，例如：
+Failures and expected-value mismatches are emitted as structured JSON, for example:
 
 ```json
 {"level":"warning","stage":"match","message":"expected instruction mismatch","address":"0x100000498","type":"asm_expected","context":"current=0x... expected=0x..."}
 ```
 
-字段包括阶段、地址、重定位或匹配类型和上下文。命令行仍以非零退出码表示 patch 失败。
+Diagnostics include the stage, address, relocation or match type, and context. The command-line
+tool still returns a non-zero status when patching fails.
 
-## 构建配置
+## Build Configuration
 
-`armcave.conf` 支持多个独立 profile：
+`armcave.conf` supports multiple independent profiles:
 
 ```text
 build_dir = build
@@ -368,41 +409,41 @@ output = ArmCaveHook-Arcplugins/binaries/Arc-mobile.patched
 plugins = ArmCaveHook-Arcplugins/plugins/apple
 ```
 
-每个 profile 都有独立的输入、输出和插件目录。可选的 `plugin_whitelist` 和 `plugin_blacklist` 用逗号分隔插件文件名。
+Each profile has its own input, output, and plugin directory. Optional
+`plugin_whitelist` and `plugin_blacklist` values accept comma-separated plugin filenames.
 
-构建要求：
+Build requirements:
 
-- CMake 3.24 或更高版本
-- C++17 编译器
-- Clang/Clang++，用于生成 AArch64 插件对象
-- Windows 使用 CMake、Clang 和 MSVC 工具链
+- CMake 3.24 or newer
+- A C++17 compiler
+- Clang and Clang++ for AArch64 plugin objects
+- CMake, Clang, and MSVC tools on Windows
 
-## 完成项
+## Completed
 
-- [x] Apple 64 位 Mach-O 插件注入
-- [x] Android 64 位 ELF 插件注入
-- [x] AArch64 指令 decoder、relocator 和 CFG analyzer
-- [x] 4/12/20 字节远跳 trampoline
-- [x] 条件跳转、ADR/ADRP、literal load relocation
-- [x] 插件 branch veneer 和独立代码/数据段
-- [x] 多插件同名符号隔离
-- [x] Apple/Android 独立 scene loader
-- [x] Apple NCP 运行时轨道类型切换
-- [x] 多 profile 构建配置和独立插件目录
-- [x] 动态符号、PLT/GOT、字节签名和 CFG fingerprint 定位能力
-- [x] 函数级 IR、函数发现、调用/常量/字符串/返回点索引
-- [x] Mach-O chained fixups 分析、链遍历和写回偏移维护
-- [x] Objective-C class/method/category metadata 和 Swift metadata 分析
-- [x] `patch.toml` 自动脚本层和最小化 handler source 工作流
-- [x] 结构化诊断日志
+- [x] Apple 64-bit Mach-O plugin injection
+- [x] Android 64-bit ELF plugin injection
+- [x] AArch64 instruction decoder, relocator, and CFG analyzer
+- [x] 4/12/20-byte far-jump sequences
+- [x] Conditional branches, ADR/ADRP, and literal-load relocation
+- [x] Plugin branch veneers and independent code/data segments
+- [x] Duplicate-symbol isolation across plugins
+- [x] Independent Apple and Android scene loaders
+- [x] Multi-profile build configuration and independent plugin directories
+- [x] Dynamic symbols, PLT/GOT, byte signatures, and CFG fingerprints
+- [x] Function-level IR, function discovery, call/constant/string/return indexes
+- [x] Mach-O chained-fixup analysis, chain walking, and writer offset maintenance
+- [x] Objective-C class/method/category metadata and Swift metadata analysis
+- [x] `patch.toml` automation layer and minimal handler-source workflow
+- [x] Structured diagnostics
 
 ## TODO
 
-- [ ] 补充 Mach-O 代码签名失效、codesign/ldid/企业证书重签名流程与提示
-- [ ] 增加字节签名稳定性说明和签名存活率估算工具
-- [ ] 基于字符串 Xref 提取候选字节码，调用 LLM 推断跨版本 Patch 地址并交由 Patch 工具校验执行
-- [ ] 提供可选的轻量级 C++ 插件工具集
-- [ ] 补充 Android ELF 的 DT_RELR、eh_frame 等覆盖度与文档
+- [ ] Document Mach-O code-signature invalidation and codesign/ldid/enterprise re-signing workflows
+- [ ] Add honest byte-signature stability guidance and a signature survival estimator
+- [ ] Extract candidate bytes from string Xrefs, call an LLM to infer cross-version patch addresses, and validate and apply them through the Patch tool
+- [ ] Provide an optional lightweight C++ toolkit for plugins
+- [ ] Expand Android ELF coverage and documentation for DT_RELR and eh_frame
 
 ## License
 
