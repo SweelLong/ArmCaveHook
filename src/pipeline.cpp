@@ -134,11 +134,19 @@ static bool has_plugin_segment(BinaryImage &binary, const std::string &name) {
     return binary.section(target) != nullptr;
 }
 
+static std::string normalize_asm_text(std::string asm_text) {
+    std::replace(asm_text.begin(), asm_text.end(), ';', '\n');
+    size_t pos = 0;
+    while ((pos = asm_text.find("\\n", pos)) != std::string::npos) {
+        asm_text.replace(pos, 2, "\n");
+        ++pos;
+    }
+    return asm_text;
+}
+
 static std::vector<uint8_t> patch_payload(const HookAction &action) {
     if (action.kind == "patch_asm") {
-        std::string asm_text = action.data;
-        std::replace(asm_text.begin(), asm_text.end(), ';', '\n');
-        auto payload = assemble_aarch64(asm_text);
+        auto payload = assemble_aarch64(normalize_asm_text(action.data));
         if (action.size) {
             if (action.size % (int)payload.size() != 0)
                 throw std::runtime_error("patch_asm size must be a multiple of assembled payload size");
@@ -156,7 +164,7 @@ static std::vector<uint8_t> patch_payload(const HookAction &action) {
 static bool matches_expected(const std::filesystem::path &output_path,
                              const HookAction &action,
                              const std::vector<uint8_t> &payload) {
-    auto expected = assemble_aarch64(action.expected);
+    auto expected = assemble_aarch64(normalize_asm_text(action.expected));
     if (expected.size() != payload.size())
         throw std::runtime_error("expected ASM must cover the same number of bytes as the patch");
     auto &binary = parse_binary(output_path);
