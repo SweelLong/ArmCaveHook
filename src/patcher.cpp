@@ -65,6 +65,31 @@ static std::vector<uint8_t> make_wrapper(const std::vector<std::string> &regs,
     return out;
 }
 
+static void append_word(std::vector<uint8_t> &out, uint32_t instruction) {
+    out.push_back((uint8_t)(instruction & 0xffU));
+    out.push_back((uint8_t)((instruction >> 8) & 0xffU));
+    out.push_back((uint8_t)((instruction >> 16) & 0xffU));
+    out.push_back((uint8_t)((instruction >> 24) & 0xffU));
+}
+
+static std::vector<uint8_t> make_cpp_func_wrapper(
+    const std::vector<std::string> &regs,
+    uint64_t wrapper_va, uint64_t plugin_va) {
+    (void)regs;
+    std::vector<uint8_t> out;
+
+    // The call site prepares the first C++ argument in w0. Preserve the
+    // caller's LR, then expose the C++ return value in x1.
+    append_word(out, 0xa9bf7bfdU); // stp x29, x30, [sp, #-16]!
+    auto branch = armcave::aarch64::make_branch_sequence(
+        wrapper_va + out.size(), plugin_va, true);
+    out.insert(out.end(), branch.begin(), branch.end());
+    append_word(out, 0xaa0003e1U); // mov x1, x0
+    append_word(out, 0xa8c17bfdU); // ldp x29, x30, [sp], #16
+    append_word(out, 0xd65f03c0U); // ret
+    return out;
+}
+
 static struct CaveFrame {
     std::vector<uint8_t> save;
     std::vector<uint8_t> restore;
@@ -148,11 +173,22 @@ int plugin_wrapper_max_size(const std::vector<std::string> &registers) {
                                       (int)armcave::aarch64::kMaxBranchSequenceBytes;
 }
 
+int cpp_func_wrapper_size(const std::vector<std::string> &registers) {
+    return 4 + (int)std::min<size_t>(registers.size(), 8) * 4 + 4 + 12;
+}
+
+int cpp_func_wrapper_max_size(const std::vector<std::string> &registers) {
+    return 4 + (int)std::min<size_t>(registers.size(), 8) * 4 +
+           (int)armcave::aarch64::kMaxBranchSequenceBytes + 12;
+}
+
 std::vector<uint8_t> build_plugin_wrapper(
     const std::vector<std::string> &registers,
     uint64_t wrapper_va,
-    uint64_t plugin_va) {
-    return make_wrapper(registers, wrapper_va, plugin_va);
+    uint64_t plugin_va,
+    bool cpp_func) {
+    return cpp_func ? make_cpp_func_wrapper(registers, wrapper_va, plugin_va)
+                    : make_wrapper(registers, wrapper_va, plugin_va);
 }
 
 int hook_window_size(uint64_t src_va, uint64_t dst_va) {
@@ -329,6 +365,27 @@ void patch_hook_window(const std::filesystem::path &binary_path,
     for (int pos = (int)branch.size(); pos < size; pos += 4)
         memcpy(&data[off + pos], NOP, 4);
 
+    write_file(output_path, data);
+}
+
+void patch_call_window(const std::filesystem::path &binary_path,
+                       const std::filesystem::path &output_path,
+                       uint64_t src_va, int size, uint64_t dst_va) {
+    (void)binary_path;
+    auto binary = BinaryImage::parse(output_path);
+    if (!binary)
+        throw std::runtime_error("failed to parse " + output_path.string());
+
+    int off = va_to_offset(binary.get(), src_va);
+    auto call = armcave::aarch64::make_branch_sequence(src_va, dst_va, true);
+    auto data = read_file(output_path);
+    if ((int)call.size() > size || size % 4)
+        throw std::runtime_error("call window too small");
+    if (off < 0 || (size_t)off + (size_t)size > data.size())
+        throw std::runtime_error("call window is outside the file");
+    memcpy(&data[off], call.data(), call.size());
+    for (int pos = (int)call.size(); pos < size; pos += 4)
+        memcpy(&data[off + pos], NOP, 4);
     write_file(output_path, data);
 }
 

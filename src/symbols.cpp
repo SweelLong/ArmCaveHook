@@ -46,6 +46,25 @@ static uint64_t resolve_armcave_data(const std::string &symbol_name) {
     return resolve_marker(symbol_name, "armcave_data_");
 }
 
+static bool resolve_armcave_asm_id(const std::string &symbol_name,
+                                   uint64_t &id) {
+    for (auto &name : names(symbol_name)) {
+        auto idx = name.find("armcave_asm_");
+        if (idx == std::string::npos) continue;
+        std::string raw = name.substr(idx + strlen("armcave_asm_"));
+        while (!raw.empty() && (raw.back() == 'U' || raw.back() == 'L' ||
+                                raw.back() == 'u' || raw.back() == 'l'))
+            raw.pop_back();
+        if (raw.empty()) continue;
+        char *end = nullptr;
+        unsigned long long parsed = strtoull(raw.c_str(), &end, 0);
+        if (!end || *end != '\0') continue;
+        id = (uint64_t)parsed;
+        return true;
+    }
+    return false;
+}
+
 static uint64_t resolve_via_symbol_table(BinaryImage *binary, const std::string &symbol_name) {
     if (binary->is_elf()) {
         for (const auto &candidate : names(symbol_name)) {
@@ -187,6 +206,12 @@ static void write_word(std::vector<uint8_t> &data, int off, uint32_t insn) {
     memcpy(data.data() + off, &insn, 4);
 }
 
+static void write_qword(std::vector<uint8_t> &data, int off, uint64_t value) {
+    if (off < 0 || (size_t)off + 8 > data.size())
+        throw std::runtime_error("relocation offset is outside text");
+    memcpy(data.data() + off, &value, 8);
+}
+
 static void patch_branch26(std::vector<uint8_t> &data, int off,
                            uint64_t src, uint64_t dst) {
     uint32_t insn = read_word(data, off);
@@ -254,7 +279,16 @@ static void patch_ldr_to_add(std::vector<uint8_t> &data, int off, uint64_t targe
 static uint64_t relocation_target(const RelocEntry &reloc,
                                   BinaryImage *binary,
                                   const std::map<std::string, int> &offsets,
+                                  const std::map<uint64_t, int> &asm_offsets,
                                   uint64_t text_va, uint64_t data_va) {
+    uint64_t asm_id = 0;
+    if (resolve_armcave_asm_id(reloc.symbol_name, asm_id)) {
+        auto it = asm_offsets.find(asm_id);
+        if (it == asm_offsets.end())
+            throw std::runtime_error("unknown new_asm_func id: " +
+                                     std::to_string(asm_id));
+        return text_va + (uint64_t)it->second + reloc.addend;
+    }
     if (reloc.symbol_value == 0 && reloc.symbol_section.empty()) {
         uint64_t target = resolve_armcave_va(reloc.symbol_name);
         if (!target) target = resolve_via_symbol_table(binary, reloc.symbol_name);
@@ -272,11 +306,17 @@ static uint64_t relocation_target(const RelocEntry &reloc,
 static uint64_t data_relocation_target(const RelocEntry &reloc,
                                        BinaryImage *binary,
                                        const std::map<std::string, int> &offsets,
+                                       const std::map<uint64_t, int> &asm_offsets,
                                        uint64_t text_va, uint64_t data_va) {
+    uint64_t asm_id = 0;
+    if (resolve_armcave_asm_id(reloc.symbol_name, asm_id))
+        return relocation_target(reloc, binary, offsets, asm_offsets,
+                                 text_va, data_va);
     uint64_t target = resolve_armcave_data(reloc.symbol_name);
     if (target) return target + reloc.addend;
     if (!reloc.symbol_section.empty())
-        return relocation_target(reloc, binary, offsets, text_va, data_va);
+        return relocation_target(reloc, binary, offsets, asm_offsets,
+                                 text_va, data_va);
     target = resolve_import_slot(binary, reloc.symbol_name);
     if (!target) throw std::runtime_error("unresolved import slot: " + reloc.symbol_name);
     return target + reloc.addend;
@@ -288,6 +328,7 @@ resolve_plugin_relocs(
     const std::vector<uint8_t> &extra,
     const std::vector<RelocEntry> &relocs,
     const std::map<std::string, int> &offsets,
+    const std::map<uint64_t, int> &asm_offsets,
     const std::filesystem::path &binary_path,
     uint64_t text_va,
     uint64_t data_va) {
@@ -307,8 +348,14 @@ resolve_plugin_relocs(
         auto &section = r.symbol_section;
         int64_t addend = r.addend;
 
-        if (t == 2) {
-            uint64_t dst = relocation_target(r, binary.get(), offsets, text_va, data_va);
+        if (t == 0 && !name.empty()) {
+            write_qword(text_buf, off,
+                        relocation_target(r, binary.get(), offsets, asm_offsets,
+                                          text_va, data_va));
+
+        } else if (t == 2) {
+            uint64_t dst = relocation_target(r, binary.get(), offsets, asm_offsets,
+                                              text_va, data_va);
             uint64_t src = text_va + (uint64_t)off;
             uint32_t instruction = read_word(text_buf, off);
             if (!armcave::aarch64::fits_branch26(src, dst)) {
@@ -330,22 +377,27 @@ resolve_plugin_relocs(
         } else if (t == 3) {
             patch_page21(text_buf, off, text_va + (uint64_t)off,
                          data_relocation_target(r, binary.get(), offsets,
+                                                asm_offsets,
                                                 text_va, data_va));
 
         } else if (t == 4) {
             patch_pageoff12(text_buf, off,
                             data_relocation_target(r, binary.get(), offsets,
+                                                   asm_offsets,
                                                    text_va, data_va));
 
         } else if (t == 5 && !name.empty()) {
             patch_page21(text_buf, off, text_va + (uint64_t)off,
                          data_relocation_target(r, binary.get(), offsets,
+                                                asm_offsets,
                                                 text_va, data_va));
 
         } else if (t == 6 && !name.empty()) {
             uint64_t target = data_relocation_target(r, binary.get(), offsets,
+                                                     asm_offsets,
                                                      text_va, data_va);
-            if (resolve_armcave_data(name))
+            uint64_t asm_id = 0;
+            if (resolve_armcave_data(name) || resolve_armcave_asm_id(name, asm_id))
                 patch_ldr_to_add(text_buf, off, target);
             else
                 patch_got_load_pageoff12(text_buf, off, target);

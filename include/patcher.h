@@ -24,10 +24,13 @@ std::vector<uint8_t> build_hook_dispatch(
 
 int plugin_wrapper_size(const std::vector<std::string> &registers);
 int plugin_wrapper_max_size(const std::vector<std::string> &registers);
+int cpp_func_wrapper_size(const std::vector<std::string> &registers);
+int cpp_func_wrapper_max_size(const std::vector<std::string> &registers);
 std::vector<uint8_t> build_plugin_wrapper(
     const std::vector<std::string> &registers,
     uint64_t wrapper_va,
-    uint64_t plugin_va);
+    uint64_t plugin_va,
+    bool cpp_func = false);
 
 int hook_window_size(uint64_t src_va, uint64_t dst_va);
 
@@ -43,6 +46,10 @@ std::vector<uint8_t> build_hook_cave(
     const std::vector<uint64_t> *nop_addrs = nullptr);
 
 void patch_hook_window(const std::filesystem::path &binary_path,
+                       const std::filesystem::path &output_path,
+                       uint64_t src_va, int size, uint64_t dst_va);
+
+void patch_call_window(const std::filesystem::path &binary_path,
                        const std::filesystem::path &output_path,
                        uint64_t src_va, int size, uint64_t dst_va);
 

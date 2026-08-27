@@ -19,6 +19,9 @@ struct HookAction {
     std::string data;
     std::string expected;
     bool has_expected = false;
+    int asm_offset = 0;
+    uint64_t function_id = 0;
+    bool has_function_id = false;
 };
 
 struct PluginSpec {

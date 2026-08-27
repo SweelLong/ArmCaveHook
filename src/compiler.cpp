@@ -10,6 +10,7 @@
 #include <chrono>
 #include <atomic>
 #include <stdexcept>
+#include <cctype>
 
 static std::filesystem::path project_root() {
 #ifdef ARMCAVE_PROJECT_ROOT
@@ -70,6 +71,14 @@ static std::string quiet_redirect() {
 #endif
 }
 
+static std::string compiler_error_redirect(const std::filesystem::path &path) {
+#ifdef _WIN32
+    return " >NUL 2>" + shell_quote(path.string());
+#else
+    return " >/dev/null 2>" + shell_quote(path.string());
+#endif
+}
+
 MachO open_macho(const std::string &path) {
     MachO mo;
     auto binary = BinaryImage::parse(path);
@@ -83,6 +92,80 @@ static uint64_t parse_int(const std::string &value) {
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
     if (s.empty() || s == "0" || s == "entry") return 0;
     return strtoull(s.c_str(), nullptr, 0);
+}
+
+static std::string unescape_metadata(std::string value) {
+    std::string out;
+    out.reserve(value.size());
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] != '\\' || i + 1 >= value.size()) {
+            out += value[i];
+            continue;
+        }
+        char escaped = value[++i];
+        switch (escaped) {
+        case 'n': out += '\n'; break;
+        case 'r': out += '\r'; break;
+        case 't': out += '\t'; break;
+        case '\\': out += '\\'; break;
+        case '"': out += '"'; break;
+        default:
+            out += '\\';
+            out += escaped;
+            break;
+        }
+    }
+    return out;
+}
+
+static std::string trim_text(std::string value) {
+    while (!value.empty() && std::isspace((unsigned char)value.front()))
+        value.erase(value.begin());
+    while (!value.empty() && std::isspace((unsigned char)value.back()))
+        value.pop_back();
+    return value;
+}
+
+static std::string unquote_metadata(std::string value) {
+    value = trim_text(value);
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+        value = value.substr(1, value.size() - 2);
+    return unescape_metadata(value);
+}
+
+static std::vector<std::string> parse_asm_lines(std::string value) {
+    value = trim_text(value);
+    if (value.empty()) return {};
+
+    if (value.front() != '[')
+        return {unquote_metadata(value)};
+
+    std::vector<std::string> lines;
+    bool saw_string = false;
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] != '"') continue;
+        saw_string = true;
+        std::string line;
+        for (++i; i < value.size(); ++i) {
+            if (value[i] == '"') break;
+            if (value[i] == '\\' && i + 1 < value.size()) {
+                char escaped = value[++i];
+                switch (escaped) {
+                case 'n': line += '\n'; break;
+                case 'r': line += '\r'; break;
+                case 't': line += '\t'; break;
+                case '\\': line += '\\'; break;
+                case '"': line += '"'; break;
+                default: line += escaped; break;
+                }
+            } else {
+                line += value[i];
+            }
+        }
+        lines.push_back(std::move(line));
+    }
+    if (saw_string) return lines;
+    return {unquote_metadata(value)};
 }
 
 static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
@@ -108,7 +191,16 @@ static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
             if (eq != std::string::npos) {
                 std::string k = part.substr(0, eq);
                 std::string v = part.substr(eq + 1);
-                if (k == "addr") act.address = (uint64_t)parse_int(v);
+                if (k == "addr") {
+                    act.address = (uint64_t)parse_int(v);
+                }
+                else if (k == "id" && (act.kind == "new_asm_func" ||
+                                        act.kind == "new_cpp_func" ||
+                                        act.kind == "patch_asm_func")) {
+                    act.function_id = parse_int(v);
+                    act.has_function_id = true;
+                }
+                else if (k == "args" && act.kind == "new_asm_func") act.data = v;
                 else if (k == "signature") act.signature = v;
                 else if (k == "symbol") act.symbol = v;
                 else if (k == "objc_class") act.objc_class = v;
@@ -120,7 +212,7 @@ static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
                 else if (k == "expected") {
                     if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
                         v = v.substr(1, v.size() - 2);
-                    act.expected = v;
+                    act.expected = unescape_metadata(v);
                     act.has_expected = true;
                 }
                 else if (k == "data") act.data = v;
@@ -221,24 +313,109 @@ std::vector<uint8_t> extract_cave_asm_ret() {
     return std::vector<uint8_t>(all.begin() + 12, all.begin() + 16);
 }
 
-std::vector<uint8_t> assemble_aarch64(const std::string &source) {
+static std::string normalize_absolute_branches(const std::string &source,
+                                               uint64_t address) {
+    if (!address) return source;
+
+    // The integrated assembler treats numeric branch operands as PC-relative
+    // offsets. Patch metadata, however, naturally uses the target VA. ADRP
+    // uses the same idea with page-relative offsets.
+    static const std::regex branch_re(
+        R"(^([ \t]*(?:b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+)(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)");
+    static const std::regex adrp_re(
+        R"(^([ \t]*adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)");
+    static const std::regex compare_branch_re(
+        R"(^([ \t]*(?:(?:cbz|cbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*|(?:tbz|tbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*#[0-9]+[ \t]*,[ \t]*))(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)");
+    std::istringstream input(source);
+    std::ostringstream output;
+    std::string line;
+    uint64_t offset = 0;
+    while (std::getline(input, line)) {
+        std::smatch match;
+        if (std::regex_match(line, match, branch_re)) {
+            uint64_t target = 0;
+            try {
+                target = std::stoull(match[2].str(), nullptr, 0);
+            } catch (...) {
+                target = 0;
+            }
+            if (target >= 0x100000000ULL) {
+                int64_t pc = (int64_t)(address + offset);
+                int64_t target_signed = (int64_t)target;
+                int64_t relative = target_signed - pc;
+                line = match[1].str() + std::to_string(relative) + match[3].str();
+            }
+        } else if (std::regex_match(line, match, adrp_re)) {
+            uint64_t target = 0;
+            try {
+                target = std::stoull(match[2].str(), nullptr, 0);
+            } catch (...) {
+                target = 0;
+            }
+            if (target >= 0x100000000ULL) {
+                uint64_t pc = address + offset;
+                int64_t relative = (int64_t)(target & ~0xfffULL) -
+                                    (int64_t)(pc & ~0xfffULL);
+                line = match[1].str() + std::to_string(relative) + match[3].str();
+            }
+        } else if (std::regex_match(line, match, compare_branch_re)) {
+            uint64_t target = 0;
+            try {
+                target = std::stoull(match[2].str(), nullptr, 0);
+            } catch (...) {
+                target = 0;
+            }
+            if (target >= 0x100000000ULL) {
+                int64_t pc = (int64_t)(address + offset);
+                int64_t target_signed = (int64_t)target;
+                int64_t relative = target_signed - pc;
+                line = match[1].str() + std::to_string(relative) + match[3].str();
+            }
+        }
+        output << line;
+        if (!input.eof()) output << '\n';
+
+        std::string trimmed = line;
+        trimmed.erase(0, trimmed.find_first_not_of(" \t"));
+        if (!trimmed.empty() && trimmed[0] != '.' &&
+            trimmed.back() != ':')
+            offset += 4;
+    }
+    return output.str();
+}
+
+std::vector<uint8_t> assemble_aarch64(const std::string &source, uint64_t address) {
     std::string td = tempdir("armcave-asm-");
     auto src = std::filesystem::path(td) / "a.s";
     auto out = std::filesystem::path(td) / "a.o";
+    auto error = std::filesystem::path(td) / "a.err";
     {
         std::ofstream f(src);
-        f << ".text\n" << source << "\n";
+        f << ".text\n" << normalize_absolute_branches(source, address) << "\n";
     }
     std::string cmd = shell_quote(clang_driver(false)) +
                       " -target arm64-apple-macosx13.0 -c " + shell_quote(src.string()) +
-                      " -o " + shell_quote(out.string()) + quiet_redirect();
+                      " -o " + shell_quote(out.string()) + compiler_error_redirect(error);
     int rc = system(cmd.c_str());
-    (void)rc;
+    if (rc != 0) {
+        std::ifstream input(error);
+        std::string detail((std::istreambuf_iterator<char>(input)),
+                           std::istreambuf_iterator<char>());
+        while (!detail.empty() && (detail.back() == '\n' || detail.back() == '\r'))
+            detail.pop_back();
+        if (detail.empty()) detail = "exit status " + std::to_string(rc);
+        throw std::runtime_error("AArch64 assembler failed: " + detail);
+    }
     auto mo = open_macho(out.string());
-    if (!mo.bin) return {};
+    if (!mo.bin)
+        throw std::runtime_error("AArch64 assembler produced an invalid object");
     auto *sec = mo.section("__text");
-    if (!sec) return {};
-    return sec->content(mo.bin->data());
+    if (!sec)
+        throw std::runtime_error("AArch64 assembler object has no __text section");
+    auto payload = sec->content(mo.bin->data());
+    if (payload.empty())
+        throw std::runtime_error("AArch64 assembler produced an empty payload");
+    return payload;
 }
 
 PluginBlob compile_plugin(const std::filesystem::path &path,
@@ -369,6 +546,66 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     blob.symbol_offsets = symbol_offsets(mo.bin.get(), text_sec);
     blob.default_segment = init_segment(path);
 
+    // Assembly functions are kept separate from C++ handlers so local labels
+    // can be resolved by one assembler invocation per function.
+    for (auto &action : blob.declarations) {
+        if (action.kind != "new_asm_func") continue;
+        if (action.data.empty())
+            throw std::runtime_error("new_asm_func requires an assembly body in " +
+                                     path.string());
+        auto lines = parse_asm_lines(action.data);
+        if (lines.empty())
+            throw std::runtime_error("new_asm_func has an empty body in " + path.string());
+        std::string source;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (i) source += '\n';
+            source += lines[i];
+        }
+        auto bytes = assemble_aarch64(source);
+        while (blob.text.size() % 4 != 0) blob.text.push_back(0);
+        action.asm_offset = (int)blob.text.size();
+        blob.text.insert(blob.text.end(), bytes.begin(), bytes.end());
+        if (!action.has_function_id)
+            throw std::runtime_error("new_asm_func is missing its internal id in " +
+                                     path.string());
+        if (!blob.asm_offsets.emplace(action.function_id, action.asm_offset).second)
+            throw std::runtime_error("duplicate new_asm_func id in " + path.string());
+    }
+
+    for (const auto &action : blob.declarations) {
+        if (action.kind != "new_cpp_func") continue;
+        if (!action.has_function_id)
+            throw std::runtime_error("new_cpp_func is missing its id in " + path.string());
+        if (action.handler.empty())
+            throw std::runtime_error("new_cpp_func is missing its handler in " + path.string());
+        auto it = blob.symbol_offsets.find(action.handler);
+        if (it == blob.symbol_offsets.end()) {
+            std::string us = "_" + action.handler;
+            it = blob.symbol_offsets.find(us);
+        }
+        if (it == blob.symbol_offsets.end())
+            throw std::runtime_error("handler symbol is not local to plugin: " +
+                                     action.handler);
+        if (blob.asm_offsets.find(action.function_id) != blob.asm_offsets.end() ||
+            blob.cpp_func_offsets.find(action.function_id) != blob.cpp_func_offsets.end())
+            throw std::runtime_error("duplicate new_cpp_func id in " + path.string());
+        blob.cpp_func_offsets[action.function_id] = it->second;
+    }
+
+    for (const auto &action : blob.declarations) {
+        if (action.kind != "patch_asm_func") continue;
+        if (!action.has_function_id)
+            throw std::runtime_error("patch_asm_func is missing its function id in " +
+                                     path.string());
+        if (blob.asm_offsets.find(action.function_id) == blob.asm_offsets.end() &&
+            blob.cpp_func_offsets.find(action.function_id) == blob.cpp_func_offsets.end())
+            throw std::runtime_error("patch_asm_func references unknown function id " +
+                                     std::to_string(action.function_id) + " in " + path.string());
+        if (action.size <= 0)
+            throw std::runtime_error("patch_asm_func has an invalid patch size in " +
+                                     path.string());
+    }
+
     return blob;
 }
 
@@ -389,6 +626,19 @@ int PluginBlob::max_text_bytes() const {
 
 PluginBlob PluginBlob::for_action(const HookAction &action) const {
     PluginBlob b = *this;
+    if (action.kind == "new_asm_func") {
+        b.register_args.clear();
+        b.entry_offset = action.asm_offset;
+        return b;
+    }
+    if (action.kind == "patch_asm_func") {
+        auto cpp = cpp_func_offsets.find(action.function_id);
+        if (cpp != cpp_func_offsets.end()) {
+            b.register_args = action.register_args;
+            b.entry_offset = cpp->second;
+            return b;
+        }
+    }
     b.register_args = action.register_args;
     auto it = symbol_offsets.find(action.handler);
     if (it == symbol_offsets.end()) {
@@ -414,7 +664,7 @@ std::vector<uint8_t> PluginBlob::build(uint64_t text_va, uint64_t data_va,
         return out;
     }
     auto [new_text, new_extra] = resolve_plugin_relocs(
-        text, extra, relocs, section_offsets,
+        text, extra, relocs, section_offsets, asm_offsets,
         *target_binary, text_va, data_va);
     new_text.resize((size_t)max_text_bytes(), 0);
     std::vector<uint8_t> out = new_text;

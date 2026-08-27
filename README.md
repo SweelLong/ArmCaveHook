@@ -99,6 +99,9 @@ instructions manually.
 | `hook_detour_objc_method(class_name, selector, handler, ...)` | Resolves Apple Objective-C metadata and detours the method IMP. |
 | `patch_asm(addr, "...")` | Writes assembled AArch64 instructions. |
 | `patch_asm(addr, "...", "expected")` | Writes only when the original instruction sequence matches `expected`. |
+| `patch_asm_func(addr, id)` | Replaces the call-site instruction with `BL` to a registered assembly or C++ function. Use `patch_asm` separately to move the call argument into `w0` or `x0`. |
+| `new_asm_func_id(id, ["...", "..."])` / `new_asm_func(["...", "..."])` | Registers a pure-assembly function with local labels; reference it with `patch_asm_func`. |
+| `new_cpp_func_id(id, handler)` / `new_cpp_func(handler)` | Registers a C++ handler under a stable ID. Source registers are specified at each `patch_asm_func` call. |
 | `bind_func_by_sym(ret, name, args, symbol)` | Binds a normal, C++, or imported function symbol. |
 | `bind_func_by_addr(ret, name, args, addr)` | Binds a fixed target address and resolves generated `B/BL` relocations. |
 | `bind_obj_by_sym(type, name, symbol)` | Binds a global or static target object. |
@@ -113,7 +116,6 @@ instructions manually.
 | `armcave_json_copy_or_integer(json, key, out, size)` | Copies a JSON label or numeric fallback into a platform-neutral text buffer. |
 | `armcave_asset_reader` / `armcave_asset_load` / `armcave_asset_release` | Cross-platform asset lifetime API with platform-owned open/close adapters. |
 | `armcave_asset_binary_reader` / `armcave_asset_binary_load` | Reuses binary-asset length checks, chunked reads, allocation, and release. |
-| `armcave_load_rating_list(reader, path, key, out, size)` | Loads JSON through a platform adapter, copies the integer-key label, and falls back to the number. |
 
 Register arguments are copied by a generated wrapper into standard AArch64 argument registers:
 
@@ -215,9 +217,90 @@ extern "C" void init(void) {
 APIs. They do not search for a new-version location. Target-function addresses, object field
 offsets, and ABI changes in a plugin must also be handled separately.
 
+### Pure Assembly Functions
+
+`new_asm_func_id` registers a pure assembly body under a stable numeric ID. Labels are
+local to that function and can be used by `B`, `BL`, and conditional branches. It does
+not return an address; `patch_asm_func` resolves the generated function address after the
+plugin segment has been laid out:
+
+```cpp
+extern "C" void init(void) {
+    new_asm_func_id(1, [
+        "loop:",
+        "mov w0, #1",
+        "b loop"
+    ]);
+}
+```
+
+For reuse at multiple call sites, give the assembly function a stable numeric ID and use
+`patch_asm_func` at each site. The function patch replaces one instruction with `BL`. It does
+not move values between registers; use a separate `patch_asm` at the call site when the target
+function needs a value in a specific register.
+
+```cpp
+enum { kFunction = 1 };
+
+extern "C" void init(void) {
+    new_asm_func_id(kFunction, [
+        "cmp w0, #10",
+        "b.hs enabled",
+        "mov w0, #0",
+        "ret",
+        "enabled:",
+        "mov w0, #1",
+        "ret"
+    ]);
+    patch_asm(0x100000100, "mov w0, w8");
+    patch_asm_func(0x100000104, kFunction);
+}
+```
+
+### C++ Functions
+
+Use `new_cpp_func_id` when the function body is clearer in C++. The handler follows the normal
+C++ AArch64 ABI: its first integer or pointer argument is read from `x0`/`w0`, and its return
+value is produced in `x0`. `patch_asm_func` only emits the `BL`; prepare `w0` or `x0` separately
+at each call site when the source value is held in another register. The generated wrapper
+preserves the caller's link register and places a pointer return value in `x1` for the original
+call-site code to consume.
+
+```cpp
+enum { kCppFunction = 2 };
+
+extern "C" const char *select_text(unsigned value) {
+    return value >= 10 ? "enabled" : "disabled";
+}
+
+extern "C" void init(void) {
+    new_cpp_func_id(kCppFunction, select_text);
+    patch_asm(0x100000200, "mov w0, w8");
+    patch_asm_func(0x100000204, kCppFunction);
+}
+```
+
+The numeric ID is local to one compiled unit and connects a `new_asm_func_id` or
+`new_cpp_func_id` declaration with one or more `patch_asm_func` declarations. It is metadata
+used during layout; it is not a runtime address.
+
+### Assembly Addressing
+
+Assembly bodies are assembled as one unit, so local labels are preferred for internal control
+flow. A numeric address in a patch is interpreted as the target virtual address for supported
+PC-relative instructions such as `B`, `BL`, `CBZ`, `CBNZ`, and `ADRP`:
+
+```cpp
+patch_asm(0x100000300, "b 0x100000380");
+patch_asm(0x100000304, "adrp x1, 0x100100000");
+```
+
+The framework converts these operands to the required PC-relative encoding and reports an
+assembler diagnostic when the instruction or offset is not encodable.
+
 ### Expected Bytes
 
-`expected` protects a fixed-address patch from being applied to the wrong version:
+The `expected` form protects a fixed-address patch from being applied to the wrong version:
 
 ```cpp
 patch_asm(0x100500000, "nop", ".long 0x34000428");
@@ -320,9 +403,8 @@ These functions are `static inline`, so they do not introduce a framework runtim
 libc requirement into a plugin.
 
 Apple and Android share the same hook, locator, JSON, and text APIs. A platform plugin keeps its
-own asset loading, object layout, string ABI, and hook address; `armcave_json_copy_or_integer`
-provides platform-neutral JSON lookup and numeric fallback, while `armcave_load_rating_list`
-reuses the asset loading, parsing, and release flow. None of these helpers contains target-binary
+own asset loading, object layout, string ABI, and hook address. The JSON helpers provide
+platform-neutral lookup and numeric fallback; none of these helpers contains target-binary
 fields or addresses.
 
 Asset loading uses `armcave_asset_reader` and `armcave_asset_binary_reader`. Shared code sees only

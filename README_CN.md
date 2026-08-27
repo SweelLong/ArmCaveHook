@@ -93,6 +93,9 @@ extern "C" void init(void) {
 | `hook_detour_objc_method(class_name, selector, handler, ...)` | 解析 Apple Objective-C method metadata 后 detour IMP。 |
 | `patch_asm(addr, "...")` | 写入编译后的 AArch64 指令。 |
 | `patch_asm(addr, "...", "expected")` | 仅在原始指令序列匹配 expected 时写入。 |
+| `patch_asm_func(addr, id)` | 将调用点指令替换为指向已注册汇编或 C++ 函数的 `BL`。需要传参时，应另用 `patch_asm` 将参数移动到 `w0` 或 `x0`。 |
+| `new_asm_func_id(id, ["...", "..."])` / `new_asm_func(["...", "..."])` | 注册支持局部 label 的纯汇编函数，通过 `patch_asm_func` 引用。 |
+| `new_cpp_func_id(id, handler)` / `new_cpp_func(handler)` | 使用稳定 ID 注册 C++ handler；源寄存器在每个 `patch_asm_func` 调用点单独指定。 |
 | `bind_func_by_sym(ret, name, args, symbol)` | 绑定目标中的普通符号、C++ 符号或导入函数。 |
 | `bind_func_by_addr(ret, name, args, addr)` | 绑定固定地址；框架会处理生成的 `B/BL` relocation。 |
 | `bind_obj_by_sym(type, name, symbol)` | 绑定目标全局对象或静态对象。 |
@@ -107,7 +110,6 @@ extern "C" void init(void) {
 | `armcave_json_copy_or_integer(json, key, out, size)` | 使用 JSON 标签或整数回退直接写入公共文本缓冲区。 |
 | `armcave_asset_reader` / `armcave_asset_load` / `armcave_asset_release` | 跨平台资源读取生命周期接口，平台 adapter 自己实现 open/close。 |
 | `armcave_asset_binary_reader` / `armcave_asset_binary_load` | 复用二进制资源的长度检查、分段读取、分配和释放流程。 |
-| `armcave_load_rating_list(reader, path, key, out, size)` | 通过平台资源 adapter 读取 JSON 并按整数键复制标签，找不到时回退为数字。 |
 
 寄存器参数会由框架生成 wrapper，按声明顺序移动到 `x0` 至 `x7`：
 
@@ -193,6 +195,80 @@ extern "C" void init(void) {
 `bind_func_by_addr`、`hook_replace(addr, ...)` 和 `hook_detour(addr, ...)` 仍然是固定地址
 API。它们不会自动寻找新版本位置；插件中的目标函数地址、字段偏移和 ABI 变化也必须单独
 处理。
+
+### 纯汇编函数
+
+`new_asm_func_id` 使用稳定的数字 ID 注册一段纯汇编函数。函数内部的 label 由同一次汇编处理，
+可以直接用于 `B`、`BL` 和条件跳转。它不返回地址；`patch_asm_func` 会在代码段布局完成后
+自动解析生成函数的实际地址：
+
+```cpp
+extern "C" void init(void) {
+    new_asm_func_id(1, [
+        "loop:",
+        "mov w0, #1",
+        "b loop"
+    ]);
+}
+```
+
+如果同一个自定义函数需要被多个指令位置调用，可以使用稳定的数字 ID，并通过
+`patch_asm_func` 在每个位置将一条指令替换为 `BL`。如果调用点需要统一寄存器，使用
+独立的 `patch_asm` 在调用点准备目标寄存器。`patch_asm_func` 本身不会自动移动寄存器。
+
+```cpp
+enum { kFunction = 1 };
+
+extern "C" void init(void) {
+    new_asm_func_id(kFunction, [
+        "cmp w0, #10",
+        "b.hs enabled",
+        "mov w0, #0",
+        "ret",
+        "enabled:",
+        "mov w0, #1",
+        "ret"
+    ]);
+    patch_asm(0x100000100, "mov w0, w8");
+    patch_asm_func(0x100000104, kFunction);
+}
+```
+
+### C++ 函数
+
+如果判断逻辑用 C++ 更清晰，可以使用 `new_cpp_func_id`。handler 遵循普通 C++ AArch64 ABI：
+第一个整数或指针参数从 `x0`/`w0` 读取，返回值放在 `x0`。`patch_asm_func` 只负责写入 `BL`；
+如果调用点的值位于其他寄存器，应在调用点单独把它移动到 `w0` 或 `x0`。框架生成的 wrapper
+会保存调用者的返回地址，并把指针返回值放回原调用点使用的 `x1`。
+
+```cpp
+enum { kCppFunction = 2 };
+
+extern "C" const char *select_text(unsigned value) {
+    return value >= 10 ? "enabled" : "disabled";
+}
+
+extern "C" void init(void) {
+    new_cpp_func_id(kCppFunction, select_text);
+    patch_asm(0x100000200, "mov w0, w8");
+    patch_asm_func(0x100000204, kCppFunction);
+}
+```
+
+数字 ID 只在一个已编译单元内部有效，用于连接 `new_asm_func_id` 或 `new_cpp_func_id` 与一个或
+多个 `patch_asm_func` 声明。它是布局阶段使用的元数据，不是运行时地址。
+
+### 汇编地址
+
+汇编函数会作为一个整体汇编，因此内部控制流应优先使用局部 label。对于支持的 PC-relative
+指令，例如 `B`、`BL`、`CBZ`、`CBNZ` 和 `ADRP`，patch 中的数字地址会按目标虚拟地址解释：
+
+```cpp
+patch_asm(0x100000300, "b 0x100000380");
+patch_asm(0x100000304, "adrp x1, 0x100100000");
+```
+
+框架会把这些操作数转换为所需的 PC-relative 编码；当指令或偏移不可编码时，会输出汇编诊断。
 
 ### 指令校验
 
@@ -284,9 +360,8 @@ armcave_grow_capacity(current, required, initial, result);
 这些函数是 `static inline`，会直接进入插件代码段，不引入 libc 或框架运行时依赖。
 
 Apple 和 Android 共用同一套 hook、定位、JSON 和文本 API。平台插件只适配各自的资源读取、
-对象布局、字符串 ABI 和 hook 地址；`armcave_json_copy_or_integer` 负责跨平台 JSON 标签
-查找与整数回退，`armcave_load_rating_list` 负责复用资源读取、解析和释放流程；这些函数
-都不包含任何目标二进制字段或地址。
+对象布局、字符串 ABI 和 hook 地址。JSON helper 负责跨平台查找与整数回退；这些函数都不
+包含任何目标二进制字段或地址。
 
 资源读取使用 `armcave_asset_reader` 和 `armcave_asset_binary_reader` 抽象。公共逻辑只处理
 opaque storage 和文本指针；目标函数绑定和 manager 获取仍留在插件 adapter 内部，字符串布局

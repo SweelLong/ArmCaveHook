@@ -199,6 +199,8 @@ static const unsigned char armcave_asm_data[] = {
 
 #define armcave_str2(x) #x
 #define armcave_str(x) armcave_str2(x)
+#define armcave_str_args2(...) #__VA_ARGS__
+#define armcave_str_args(...) armcave_str_args2(__VA_ARGS__)
 #define armcave_cat2(a, b) a##b
 #define armcave_cat(a, b) armcave_cat2(a, b)
 #define armcave_unique(prefix) armcave_cat(prefix, __COUNTER__)
@@ -310,11 +312,41 @@ static const unsigned char armcave_asm_data[] = {
 #define patch_asm(...) \
     armcave_pick_patch_asm(__VA_ARGS__, armcave_patch_asm_expected, armcave_patch_asm)(__VA_ARGS__)
 
+#define armcave_patch_asm_func(addr, id) \
+    __attribute__((used, section("__DATA,__armhook"))) \
+    static const char armcave_unique(armcave_patch_asm_func_meta_)[] = \
+        "patch_asm_func|addr=" armcave_str(addr) "|id=" armcave_str(id) \
+        "|size=4|segment=auto"
+
+#define patch_asm_func(addr, id) armcave_patch_asm_func(addr, id)
+
 #define armcave_pick_patch_signature(_1, _2, _3, name, ...) name
 #define patch_asm_signature(...) \
     armcave_pick_patch_signature(__VA_ARGS__, \
                                  armcave_patch_asm_signature_expected, \
                                  armcave_patch_asm_signature)(__VA_ARGS__)
+
+#define new_asm_func_id(id, ...) \
+    __attribute__((used, section("__DATA,__armhook"))) \
+    static const char armcave_unique(armcave_new_asm_meta_)[] = \
+        "new_asm_func|id=" armcave_str(id) "|args=" \
+        armcave_str_args(__VA_ARGS__)
+
+#define new_asm_func(...) \
+    new_asm_func_id(__COUNTER__, __VA_ARGS__)
+
+#define armcave_new_cpp_func_id(id, handler) \
+    __attribute__((used, section("__DATA,__armhook"))) \
+    static const char armcave_unique(armcave_new_cpp_meta_)[] = \
+        "new_cpp_func|id=" armcave_str(id) "|handler=" #handler; \
+    __attribute__((used, section("__DATA,__armkeep"))) \
+    static void *armcave_unique(armcave_cpp_keep_) = (void *)&handler
+
+#define new_cpp_func_id(id, handler) \
+    armcave_new_cpp_func_id(id, handler)
+
+#define new_cpp_func(handler) \
+    new_cpp_func_id(__COUNTER__, handler)
 
 #define bind_func_by_sym(ret, name, args, symbol) \
     extern ret name args asm(symbol)

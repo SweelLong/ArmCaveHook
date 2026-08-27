@@ -146,7 +146,7 @@ static std::string normalize_asm_text(std::string asm_text) {
 
 static std::vector<uint8_t> patch_payload(const HookAction &action) {
     if (action.kind == "patch_asm") {
-        auto payload = assemble_aarch64(normalize_asm_text(action.data));
+        auto payload = assemble_aarch64(normalize_asm_text(action.data), action.address);
         if (action.size) {
             if (action.size % (int)payload.size() != 0)
                 throw std::runtime_error("patch_asm size must be a multiple of assembled payload size");
@@ -164,7 +164,7 @@ static std::vector<uint8_t> patch_payload(const HookAction &action) {
 static bool matches_expected(const std::filesystem::path &output_path,
                              const HookAction &action,
                              const std::vector<uint8_t> &payload) {
-    auto expected = assemble_aarch64(normalize_asm_text(action.expected));
+    auto expected = assemble_aarch64(normalize_asm_text(action.expected), action.address);
     if (expected.size() != payload.size())
         throw std::runtime_error("expected ASM must cover the same number of bytes as the patch");
     auto &binary = parse_binary(output_path);
@@ -238,8 +238,18 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     };
 
     std::vector<HookAction *> direct;
+    std::vector<std::pair<Compiled *, HookAction *>> asm_call_patches;
     std::map<uint64_t, HookSite> replace_sites;
     std::map<uint64_t, HookSite> detour_sites;
+
+    auto function_for_id = [](const PluginBlob &blob, uint64_t id) -> const HookAction * {
+        for (const auto &candidate : blob.declarations) {
+            if (candidate.has_function_id && candidate.function_id == id &&
+                (candidate.kind == "new_asm_func" || candidate.kind == "new_cpp_func"))
+                return &candidate;
+        }
+        return nullptr;
+    };
 
     for (auto &cp : compiled) {
         for (auto &action : cp.blob.declarations) {
@@ -260,14 +270,23 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
             bool has_locator = !action.objc_class.empty() || !action.selector.empty() ||
                                !action.symbol.empty() || !action.swift_name.empty() ||
                                !action.signature.empty();
-            if (addr == 0 && !has_locator && !action.handler.empty())
+            if (addr == 0 && !has_locator && !action.handler.empty() &&
+                action.kind != "new_cpp_func")
                 addr = read_entry(binary);
-            if (addr == 0)
+            if (addr == 0 && action.kind != "new_asm_func" &&
+                action.kind != "new_cpp_func")
                 throw std::runtime_error(cp.spec->name + ": " + action.kind + " missing address");
             action.address = addr;
 
             if (action.kind == "patch_asm") {
                 direct.push_back(&action);
+            } else if (action.kind == "patch_asm_func") {
+                cp.has_hooks = true;
+                asm_call_patches.push_back({&cp, &action});
+            } else if (action.kind == "new_asm_func") {
+                cp.has_hooks = true;
+            } else if (action.kind == "new_cpp_func") {
+                cp.has_hooks = true;
             } else if (action.kind == "hook_replace") {
                 cp.has_hooks = true;
                 if (!action.segment.empty() && action.segment != "auto" && action.segment != "armcave") {
@@ -387,12 +406,17 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                                          target_is_macho);
         }
         for (auto &action : cp.blob.declarations) {
-            if ((action.kind != "hook_replace" && action.kind != "hook_detour") ||
-                action.register_args.empty())
+            bool is_hook = action.kind == "hook_replace" || action.kind == "hook_detour";
+            bool is_cpp_call = action.kind == "patch_asm_func" &&
+                               cp.blob.cpp_func_offsets.find(action.function_id) !=
+                               cp.blob.cpp_func_offsets.end();
+            if ((!is_hook && !is_cpp_call) ||
+                (is_hook && action.register_args.empty()))
                 continue;
             cursor = (cursor + 3) & ~3;
             wrapper_offsets[&cp][&action] = cursor;
-            cursor += plugin_wrapper_max_size(action.register_args);
+            cursor += is_cpp_call ? cpp_func_wrapper_max_size(action.register_args)
+                                  : plugin_wrapper_max_size(action.register_args);
         }
         cursor = (cursor + 15) & ~15;
         cp.code_offset = cursor;
@@ -473,9 +497,15 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         }
 
         for (auto &[action, offset] : wrapper_offsets[&cp]) {
-            int entry = cp.blob.for_action(*action).entry_offset;
+            const HookAction *function = action;
+            if (action->kind == "patch_asm_func")
+                function = function_for_id(cp.blob, action->function_id);
+            if (!function)
+                throw std::runtime_error("patch_asm_func has no registered function id");
+            int entry = cp.blob.for_action(*function).entry_offset;
             auto wrapper = build_plugin_wrapper(action->register_args,
-                cp.segment_va + offset, code_va + entry);
+                cp.segment_va + offset, code_va + entry,
+                action->kind == "patch_asm_func");
             place(cp.content, offset, wrapper);
         }
     }
@@ -521,6 +551,53 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
             printf("[plugin] %s segment=%s size=%d\n", cp.spec->name.c_str(),
                    cp.segment_name.c_str(), cp.segment_size);
         }
+    }
+
+    for (auto &[cp, action] : asm_call_patches) {
+        auto wrapper = wrapper_offsets[cp].find(action);
+        if (wrapper != wrapper_offsets[cp].end()) {
+            uint64_t function_va = cp->segment_va + (uint64_t)wrapper->second;
+            int call_size = action->size;
+            if (call_size < hook_window_size(action->address, function_va))
+                throw std::runtime_error("patch_asm_func call window is too small at 0x" +
+                                         std::to_string(action->address));
+            printf("[patch_asm_func] 0x%llx -> 0x%llx size=%d\n",
+                   (unsigned long long)action->address,
+                   (unsigned long long)function_va, call_size);
+            patch_call_window(output_path, output_path, action->address,
+                              call_size, function_va);
+            continue;
+        }
+        uint64_t function_va = 0;
+        bool found = false;
+        for (auto &function : cp->blob.declarations) {
+            if (!function.has_function_id || function.function_id != action->function_id)
+                continue;
+            if (function.kind == "new_asm_func") {
+                function_va = cp->segment_va + (uint64_t)cp->code_offset +
+                              (uint64_t)function.asm_offset;
+                found = true;
+            } else if (function.kind == "new_cpp_func") {
+                auto wrapper = wrapper_offsets[cp].find(&function);
+                if (wrapper != wrapper_offsets[cp].end()) {
+                    function_va = cp->segment_va + (uint64_t)wrapper->second;
+                    found = true;
+                }
+            }
+            if (found) break;
+        }
+        if (!found)
+            throw std::runtime_error("unknown function id " +
+                                     std::to_string(action->function_id));
+        int call_size = action->size;
+        if (call_size < hook_window_size(action->address, function_va))
+            throw std::runtime_error("patch_asm_func call window is too small at 0x" +
+                                     std::to_string(action->address));
+        printf("[patch_asm_func] 0x%llx -> 0x%llx size=%d\n",
+               (unsigned long long)action->address,
+               (unsigned long long)function_va, call_size);
+        patch_call_window(output_path, output_path, action->address,
+                          call_size, function_va);
     }
 
     auto patch_sites = [&](auto &sites) {

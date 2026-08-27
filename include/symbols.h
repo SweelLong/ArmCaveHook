@@ -19,6 +19,7 @@ resolve_plugin_relocs(
     const std::vector<uint8_t> &extra,
     const std::vector<RelocEntry> &relocs,
     const std::map<std::string, int> &offsets,
+    const std::map<uint64_t, int> &asm_offsets,
     const std::filesystem::path &binary_path,
     uint64_t text_va,
     uint64_t data_va);

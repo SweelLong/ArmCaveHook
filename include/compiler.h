@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <memory>
 #include "binary_image.h"
 #include "plugin.h"
@@ -34,6 +35,8 @@ struct PluginBlob {
     std::vector<RelocEntry> relocs;
     std::map<std::string, int> section_offsets;
     std::map<std::string, int> symbol_offsets;
+    std::map<uint64_t, int> asm_offsets;
+    std::map<uint64_t, int> cpp_func_offsets;
     std::vector<std::string> register_args;
     int entry_offset = 0;
     std::string default_segment;
@@ -49,7 +52,8 @@ std::vector<uint8_t> extract_cave_asm_save();
 std::vector<uint8_t> extract_cave_asm_restore();
 std::vector<uint8_t> extract_cave_asm_ret();
 
-std::vector<uint8_t> assemble_aarch64(const std::string &source);
+std::vector<uint8_t> assemble_aarch64(const std::string &source,
+                                      uint64_t address = 0);
 
 PluginBlob compile_plugin(const std::filesystem::path &path,
                           const std::filesystem::path *target_binary);
