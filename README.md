@@ -38,20 +38,22 @@ extern "C" void init(void) {
 }
 ```
 
+The framework currently supports Apple Mach-O and Android ELF injection, AArch64
+decoding, relocation, CFG/function analysis, far branches, isolated plugin code
+and data segments, symbol and PLT/GOT lookup, byte signatures, Mach-O chained
+fixups, Objective-C and Swift metadata, `patch.toml`, and structured diagnostics.
+
+Planned work includes code-signing workflow guidance, byte-signature stability
+guidance, optional cross-version address assistance, a lightweight C++ plugin
+toolkit, and broader Android ELF coverage for DT_RELR and `eh_frame`.
+
 ## Documentation
 
-- [Getting started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
 - [API reference](docs/api-reference.md)
 - [Hook API](docs/hook-api.md)
-- [Location and relocation](docs/location-and-relocation.md)
-- [Framework analysis](docs/framework-analysis.md)
-- [Patch Script](docs/patch-script.md)
-- [Plugin SDK](docs/plugin-sdk.md)
-- [Plugin data addresses](docs/plugin-data.md)
 - [Segment naming](docs/segments.md)
 - [Build configuration and diagnostics](docs/configuration-and-diagnostics.md)
-- [Project status](docs/project-status.md)
 
 ## Requirements
 

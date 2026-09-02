@@ -30,3 +30,21 @@ plugins = plugins/apple
 
 在 macOS 上，如果 `codesign` 可用，Mach-O 输出会进行 ad-hoc 签名。发布或安装仍可能需要
 目标平台自己的签名流程。
+
+## Patch Script
+
+简单的 handler patch 可使用 `patch.toml`，无需手写插件元数据：
+
+```toml
+[target]
+binary = "build/game"
+output = "build/game.patched"
+
+[[hook]]
+function = "Player::Damage"
+replace = "damage.cpp"
+handler = "replacement"
+registers = ["x0", "w1"]
+```
+
+执行 `./build/armcave --script patch.toml`。引用的 C++ 文件只需要定义指定的 handler。

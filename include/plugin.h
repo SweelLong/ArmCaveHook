@@ -13,8 +13,7 @@ struct HookAction {
     std::string selector;
     std::string swift_name;
     std::string handler;
-    std::string data_symbol;
-    std::string data_register;
+    std::string function_name;
     std::string segment = "auto";
     std::vector<std::string> register_args;
     int size = 0;
@@ -22,8 +21,6 @@ struct HookAction {
     std::string expected;
     bool has_expected = false;
     int asm_offset = 0;
-    uint64_t function_id = 0;
-    bool has_function_id = false;
 };
 
 struct PluginSpec {

@@ -26,6 +26,9 @@ struct RelocEntry {
     uint64_t symbol_value = 0;
     std::string symbol_section;
     int64_t addend = 0;
+    bool from_new_asm_func = false;
+    bool has_absolute_target = false;
+    uint64_t absolute_target = 0;
 };
 
 struct PluginBlob {
@@ -36,8 +39,7 @@ struct PluginBlob {
     std::map<std::string, int> section_offsets;
     std::map<std::string, int> symbol_offsets;
     std::map<std::string, int> data_symbol_offsets;
-    std::map<uint64_t, int> asm_offsets;
-    std::map<uint64_t, int> cpp_func_offsets;
+    std::map<std::string, int> function_offsets;
     std::vector<std::string> register_args;
     int entry_offset = 0;
     std::string default_segment;

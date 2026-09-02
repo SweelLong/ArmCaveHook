@@ -168,6 +168,38 @@ static std::vector<std::string> parse_asm_lines(std::string value) {
     return {unquote_metadata(value)};
 }
 
+static std::string split_asm_statements(const std::vector<std::string> &lines) {
+    std::string source;
+    bool quoted = false;
+    bool escaped = false;
+    for (const auto &line : lines) {
+        for (char c : line) {
+            if (escaped) {
+                source += c;
+                escaped = false;
+                continue;
+            }
+            if (c == '\\' && quoted) {
+                source += c;
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                quoted = !quoted;
+                source += c;
+                continue;
+            }
+            if (c == ';' && !quoted)
+                source += '\n';
+            else
+                source += c;
+        }
+        source += '\n';
+    }
+    if (!source.empty()) source.pop_back();
+    return source;
+}
+
 static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
     std::vector<HookAction> items;
     std::string all((const char *)data.data(), data.size());
@@ -194,23 +226,16 @@ static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
                 if (k == "addr") {
                     act.address = (uint64_t)parse_int(v);
                 }
-                else if (k == "id" && (act.kind == "new_asm_func" ||
-                                        act.kind == "new_cpp_func" ||
-                                        act.kind == "patch_asm_func")) {
-                    act.function_id = parse_int(v);
-                    act.has_function_id = true;
-                }
                 else if (k == "args" && act.kind == "new_asm_func") act.data = v;
                 else if (k == "signature") act.signature = v;
-                else if (k == "symbol") {
-                    if (act.kind == "patch_adrl_data") act.data_symbol = v;
-                    else act.symbol = v;
-                }
+                else if (k == "symbol") act.symbol = v;
                 else if (k == "objc_class") act.objc_class = v;
                 else if (k == "selector") act.selector = v;
                 else if (k == "swift") act.swift_name = v;
                 else if (k == "handler") act.handler = v;
-                else if (k == "reg" && act.kind == "patch_adrl_data") act.data_register = v;
+                else if (k == "name" && (act.kind == "new_asm_func" ||
+                                          act.kind == "new_cpp_func"))
+                    act.function_name = v;
                 else if (k == "segment") act.segment = v;
                 else if (k == "size") act.size = atoi(v.c_str());
                 else if (k == "expected") {
@@ -344,17 +369,15 @@ std::vector<uint8_t> extract_cave_asm_ret() {
 
 static std::string normalize_absolute_branches(const std::string &source,
                                                uint64_t address) {
-    if (!address) return source;
-
-    // The integrated assembler treats numeric branch operands as PC-relative
-    // offsets. Patch metadata, however, naturally uses the target VA. ADRP
-    // uses the same idea with page-relative offsets.
     static const std::regex branch_re(
-        R"(^([ \t]*(?:b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+)(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)");
+        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)(b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
+        std::regex::icase);
     static const std::regex adrp_re(
-        R"(^([ \t]*adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)");
+        R"(^([ \t]*adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
+        std::regex::icase);
     static const std::regex compare_branch_re(
-        R"(^([ \t]*(?:(?:cbz|cbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*|(?:tbz|tbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*#[0-9]+[ \t]*,[ \t]*))(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)");
+        R"(^([ \t]*(?:(?:cbz|cbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*|(?:tbz|tbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*#[0-9]+[ \t]*,[ \t]*))(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
+        std::regex::icase);
     std::istringstream input(source);
     std::ostringstream output;
     std::string line;
@@ -364,15 +387,27 @@ static std::string normalize_absolute_branches(const std::string &source,
         if (std::regex_match(line, match, branch_re)) {
             uint64_t target = 0;
             try {
-                target = std::stoull(match[2].str(), nullptr, 0);
+                target = std::stoull(match[3].str(), nullptr, 0);
             } catch (...) {
                 target = 0;
             }
-            if (target >= 0x100000000ULL) {
+            std::string mnemonic = match[2].str();
+            for (char &c : mnemonic)
+                c = (char)std::tolower((unsigned char)c);
+            if (target >= 0x100000000ULL && !address &&
+                (mnemonic == "b" || mnemonic == "bl")) {
+                // Keep the target symbolic until the final plugin VA is known.
+                // Encoding the absolute VA as MOVZ/MOVK is not ASLR-safe.
+                std::ostringstream symbol;
+                symbol << "armcave_absolute_" << std::hex << target;
+                line = match[1].str() + match[2].str() + " " +
+                       symbol.str() + match[4].str();
+            } else if (target >= 0x100000000ULL) {
                 int64_t pc = (int64_t)(address + offset);
                 int64_t target_signed = (int64_t)target;
                 int64_t relative = target_signed - pc;
-                line = match[1].str() + std::to_string(relative) + match[3].str();
+                line = match[1].str() + match[2].str() + " " +
+                       std::to_string(relative) + match[4].str();
             }
         } else if (std::regex_match(line, match, adrp_re)) {
             uint64_t target = 0;
@@ -406,9 +441,21 @@ static std::string normalize_absolute_branches(const std::string &source,
 
         std::string trimmed = line;
         trimmed.erase(0, trimmed.find_first_not_of(" \t"));
-        if (!trimmed.empty() && trimmed[0] != '.' &&
-            trimmed.back() != ':')
-            offset += 4;
+        if (!trimmed.empty() && trimmed[0] != '.') {
+            std::size_t start = 0;
+            while (start < trimmed.size()) {
+                std::size_t end = trimmed.find(';', start);
+                std::string instruction = trimmed.substr(start, end - start);
+                while (!instruction.empty() &&
+                       (instruction.back() == ' ' || instruction.back() == '\t'))
+                    instruction.pop_back();
+                if (!instruction.empty() && instruction.back() != ':')
+                    offset += 4;
+                if (end == std::string::npos)
+                    break;
+                start = end + 1;
+            }
+        }
     }
     return output.str();
 }
@@ -445,6 +492,103 @@ std::vector<uint8_t> assemble_aarch64(const std::string &source, uint64_t addres
     if (payload.empty())
         throw std::runtime_error("AArch64 assembler produced an empty payload");
     return payload;
+}
+
+static MachO assemble_aarch64_object(const std::string &source) {
+    std::string td = tempdir("armcave-asm-object-");
+    auto src = std::filesystem::path(td) / "a.s";
+    auto out = std::filesystem::path(td) / "a.o";
+    auto error = std::filesystem::path(td) / "a.err";
+    {
+        std::ofstream f(src);
+        f << ".text\n" << normalize_absolute_branches(source, 0) << "\n";
+    }
+    std::string cmd = shell_quote(clang_driver(false)) +
+                      " -target arm64-apple-macosx13.0 -c " + shell_quote(src.string()) +
+                      " -o " + shell_quote(out.string()) + compiler_error_redirect(error);
+    if (system(cmd.c_str()) != 0) {
+        std::ifstream input(error);
+        std::string detail((std::istreambuf_iterator<char>(input)),
+                           std::istreambuf_iterator<char>());
+        while (!detail.empty() && (detail.back() == '\n' || detail.back() == '\r'))
+            detail.pop_back();
+        if (detail.empty()) detail = "unknown assembler error";
+        throw std::runtime_error("AArch64 assembler failed for new_asm_func: " + detail);
+    }
+    auto mo = open_macho(out.string());
+    if (!mo.bin || !mo.section("__text"))
+        throw std::runtime_error("AArch64 assembler produced an invalid new_asm_func object");
+    return mo;
+}
+
+static void append_asm_text_relocations(PluginBlob &blob, BinaryImage *image,
+                                        BinarySection *text_sec, int base,
+                                        bool from_new_asm_func = false) {
+    bool has_addend = false;
+    int64_t pending_addend = 0;
+    uint64_t pending_address = 0;
+    for (auto &reloc : text_sec->relocations) {
+        uint64_t address = reloc.address;
+        if (address >= text_sec->size)
+            throw std::runtime_error("text relocation is outside __text");
+        if (reloc.type == 10) {
+            int32_t raw = (int32_t)(reloc.symbol_index & 0x00ffffff);
+            if (raw & 0x00800000) raw |= (int32_t)0xff000000;
+            pending_addend = raw;
+            pending_address = address;
+            has_addend = true;
+            continue;
+        }
+        RelocEntry r;
+        r.type = reloc.type;
+        r.address = base + (int)address;
+        r.from_new_asm_func = from_new_asm_func;
+        if (has_addend) {
+            if (pending_address != address)
+                throw std::runtime_error("ARM64_RELOC_ADDEND is not paired");
+            r.addend = pending_addend;
+            has_addend = false;
+        }
+        const BinarySymbol *sym = reloc.external ? image->symbol(reloc.symbol_index) : nullptr;
+        if (sym) {
+            r.symbol_name = sym->name;
+            std::string normalized_name = r.symbol_name;
+            if (!normalized_name.empty() && normalized_name[0] == '_')
+                normalized_name.erase(0, 1);
+            static const std::string absolute_prefix = "armcave_absolute_";
+            if (from_new_asm_func &&
+                normalized_name.compare(0, absolute_prefix.size(), absolute_prefix) == 0) {
+                auto value = normalized_name.substr(absolute_prefix.size());
+                if (value.empty())
+                    throw std::runtime_error("new_asm_func has an empty absolute branch target");
+                char *end = nullptr;
+                uint64_t target = strtoull(value.c_str(), &end, 16);
+                if (!end || *end != '\0')
+                    throw std::runtime_error("new_asm_func has an invalid absolute branch target: " +
+                                             value);
+                r.has_absolute_target = true;
+                r.absolute_target = target;
+            }
+            r.symbol_value = sym->value;
+            if (!sym->undefined()) {
+                for (auto &sec : image->sections()) {
+                    uint64_t start = sec.virtual_address;
+                    uint64_t end = start + sec.size;
+                    if (start <= r.symbol_value && r.symbol_value < end) {
+                        r.symbol_section = sec.name;
+                        r.symbol_value -= start;
+                        break;
+                    }
+                }
+            }
+        } else if (reloc.symbol_index > 0 && reloc.symbol_index <= image->sections().size()) {
+            auto &sec = image->sections()[reloc.symbol_index - 1];
+            r.symbol_section = sec.name;
+        }
+        blob.relocs.push_back(r);
+    }
+    if (has_addend)
+        throw std::runtime_error("orphan ARM64_RELOC_ADDEND");
 }
 
 PluginBlob compile_plugin(const std::filesystem::path &path,
@@ -520,54 +664,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     blob.extra = extra;
     blob.data_symbol_offsets = data_symbol_offsets(mo.bin.get(), blob.section_offsets);
 
-    bool has_addend = false;
-    int64_t pending_addend = 0;
-    uint64_t pending_address = 0;
-    for (auto &reloc : text_sec->relocations) {
-        uint64_t address = reloc.address;
-        if (address >= text_sec->size)
-            throw std::runtime_error("text relocation is outside __text");
-        if (reloc.type == 10) {
-            int32_t raw = (int32_t)(reloc.symbol_index & 0x00ffffff);
-            if (raw & 0x00800000) raw |= (int32_t)0xff000000;
-            pending_addend = raw;
-            pending_address = address;
-            has_addend = true;
-            continue;
-        }
-        RelocEntry r;
-        r.type = reloc.type;
-        r.address = (int)address;
-        if (has_addend) {
-            if (pending_address != address)
-                throw std::runtime_error("ARM64_RELOC_ADDEND is not paired");
-            r.addend = pending_addend;
-            has_addend = false;
-        }
-        const BinarySymbol *sym = reloc.external ? mo.bin->symbol(reloc.symbol_index) : nullptr;
-        if (sym) {
-            r.symbol_name = sym->name;
-            r.symbol_value = sym->value;
-            if (!sym->undefined()) {
-                for (auto &sec : mo.bin->sections()) {
-                    uint64_t start = sec.virtual_address;
-                    uint64_t end = start + sec.size;
-                    if (start <= r.symbol_value && r.symbol_value < end) {
-                        r.symbol_section = sec.name;
-                        r.symbol_value -= start;
-                        break;
-                    }
-                }
-            }
-        } else if (reloc.symbol_index > 0 && reloc.symbol_index <= mo.bin->sections().size()) {
-            auto &sec = mo.bin->sections()[reloc.symbol_index - 1];
-            r.symbol_section = sec.name;
-            r.symbol_value = 0;
-        }
-        blob.relocs.push_back(r);
-    }
-    if (has_addend)
-        throw std::runtime_error("orphan ARM64_RELOC_ADDEND");
+    append_asm_text_relocations(blob, mo.bin.get(), text_sec, 0);
 
     auto *meta_sec = mo.section("__armhook");
     if (meta_sec)
@@ -580,34 +677,35 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     // can be resolved by one assembler invocation per function.
     for (auto &action : blob.declarations) {
         if (action.kind != "new_asm_func") continue;
+        if (action.function_name.empty())
+            throw std::runtime_error("new_asm_func is missing its name in " +
+                                     path.string());
         if (action.data.empty())
             throw std::runtime_error("new_asm_func requires an assembly body in " +
                                      path.string());
         auto lines = parse_asm_lines(action.data);
         if (lines.empty())
             throw std::runtime_error("new_asm_func has an empty body in " + path.string());
-        std::string source;
-        for (size_t i = 0; i < lines.size(); ++i) {
-            if (i) source += '\n';
-            source += lines[i];
-        }
-        auto bytes = assemble_aarch64(source);
+        std::string source = split_asm_statements(lines);
+        auto asm_mo = assemble_aarch64_object(source);
+        auto *asm_text = asm_mo.section("__text");
+        auto bytes = asm_text->content(asm_mo.bin->data());
         while (blob.text.size() % 4 != 0) blob.text.push_back(0);
         action.asm_offset = (int)blob.text.size();
+        append_asm_text_relocations(blob, asm_mo.bin.get(), asm_text, action.asm_offset,
+                                    true);
         blob.text.insert(blob.text.end(), bytes.begin(), bytes.end());
-        if (!action.has_function_id)
-            throw std::runtime_error("new_asm_func is missing its internal id in " +
-                                     path.string());
-        if (!blob.asm_offsets.emplace(action.function_id, action.asm_offset).second)
-            throw std::runtime_error("duplicate new_asm_func id in " + path.string());
+        if (!blob.function_offsets.emplace(action.function_name,
+                                           action.asm_offset).second)
+            throw std::runtime_error("duplicate new function name in " + path.string());
     }
 
     for (const auto &action : blob.declarations) {
         if (action.kind != "new_cpp_func") continue;
-        if (!action.has_function_id)
-            throw std::runtime_error("new_cpp_func is missing its id in " + path.string());
         if (action.handler.empty())
             throw std::runtime_error("new_cpp_func is missing its handler in " + path.string());
+        std::string function_name = action.function_name.empty()
+            ? action.handler : action.function_name;
         auto it = blob.symbol_offsets.find(action.handler);
         if (it == blob.symbol_offsets.end()) {
             std::string us = "_" + action.handler;
@@ -616,36 +714,28 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         if (it == blob.symbol_offsets.end())
             throw std::runtime_error("handler symbol is not local to plugin: " +
                                      action.handler);
-        if (blob.asm_offsets.find(action.function_id) != blob.asm_offsets.end() ||
-            blob.cpp_func_offsets.find(action.function_id) != blob.cpp_func_offsets.end())
-            throw std::runtime_error("duplicate new_cpp_func id in " + path.string());
-        blob.cpp_func_offsets[action.function_id] = it->second;
+        if (!blob.function_offsets.emplace(function_name, it->second).second)
+            throw std::runtime_error("duplicate new function name in " + path.string());
     }
 
-    for (const auto &action : blob.declarations) {
-        if (action.kind == "patch_adrl_data") {
-            if (action.data_symbol.empty() || action.data_register.empty())
-                throw std::runtime_error("patch_adrl_data requires a variable and register in " +
-                                         path.string());
-            if (action.size < 8)
-                throw std::runtime_error("patch_adrl_data has an invalid patch size in " +
-                                         path.string());
-            if (blob.data_symbol_offsets.find(action.data_symbol) == blob.data_symbol_offsets.end())
-                throw std::runtime_error("patch_adrl_data variable is not local to plugin: " +
-                                         action.data_symbol);
-            continue;
-        }
-        if (action.kind != "patch_asm_func") continue;
-        if (!action.has_function_id)
-            throw std::runtime_error("patch_asm_func is missing its function id in " +
-                                     path.string());
-        if (blob.asm_offsets.find(action.function_id) == blob.asm_offsets.end() &&
-            blob.cpp_func_offsets.find(action.function_id) == blob.cpp_func_offsets.end())
-            throw std::runtime_error("patch_asm_func references unknown function id " +
-                                     std::to_string(action.function_id) + " in " + path.string());
-        if (action.size <= 0)
-            throw std::runtime_error("patch_asm_func has an invalid patch size in " +
-                                     path.string());
+    // Resolve references emitted by new_asm_func to registered C++ handlers.
+    // They are initially undefined Mach-O branch relocations because the
+    // assembler runs before the plugin segment receives its final VA.
+    for (auto &reloc : blob.relocs) {
+        if (!reloc.from_new_asm_func || reloc.type != 2) continue;
+        if (reloc.has_absolute_target) continue;
+        if (reloc.symbol_name.empty())
+            throw std::runtime_error("new_asm_func contains a branch with no symbol");
+        auto it = blob.function_offsets.find(reloc.symbol_name);
+        if (it == blob.function_offsets.end() && reloc.symbol_name[0] == '_')
+            it = blob.function_offsets.find(reloc.symbol_name.substr(1));
+        if (it == blob.function_offsets.end() && reloc.symbol_name[0] != '_')
+            it = blob.function_offsets.find("_" + reloc.symbol_name);
+        if (it == blob.function_offsets.end())
+            throw std::runtime_error("new_asm_func branch references unregistered function: " +
+                                     reloc.symbol_name);
+        reloc.symbol_section = "__text";
+        reloc.symbol_value = (uint64_t)it->second;
     }
 
     return blob;
@@ -673,14 +763,6 @@ PluginBlob PluginBlob::for_action(const HookAction &action) const {
         b.entry_offset = action.asm_offset;
         return b;
     }
-    if (action.kind == "patch_asm_func") {
-        auto cpp = cpp_func_offsets.find(action.function_id);
-        if (cpp != cpp_func_offsets.end()) {
-            b.register_args = action.register_args;
-            b.entry_offset = cpp->second;
-            return b;
-        }
-    }
     b.register_args = action.register_args;
     auto it = symbol_offsets.find(action.handler);
     if (it == symbol_offsets.end()) {
@@ -706,7 +788,7 @@ std::vector<uint8_t> PluginBlob::build(uint64_t text_va, uint64_t data_va,
         return out;
     }
     auto [new_text, new_extra] = resolve_plugin_relocs(
-        text, extra, relocs, section_offsets, asm_offsets,
+        text, extra, relocs, section_offsets,
         *target_binary, text_va, data_va);
     new_text.resize((size_t)max_text_bytes(), 0);
     std::vector<uint8_t> out = new_text;

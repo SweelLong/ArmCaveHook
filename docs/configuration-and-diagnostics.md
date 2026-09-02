@@ -31,3 +31,22 @@ non-zero exit status:
 
 Mach-O output is ad-hoc signed on macOS when `codesign` is available. Distribution
 or installation may still require the target-specific signing workflow.
+
+## Patch Script
+
+Use `patch.toml` for simple handler patches without writing plugin metadata by hand:
+
+```toml
+[target]
+binary = "build/game"
+output = "build/game.patched"
+
+[[hook]]
+function = "Player::Damage"
+replace = "damage.cpp"
+handler = "replacement"
+registers = ["x0", "w1"]
+```
+
+Run it with `./build/armcave --script patch.toml`. The referenced C++ file only
+needs to define the selected handler.
