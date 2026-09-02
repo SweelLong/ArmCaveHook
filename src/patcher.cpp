@@ -72,15 +72,33 @@ static void append_word(std::vector<uint8_t> &out, uint32_t instruction) {
     out.push_back((uint8_t)((instruction >> 24) & 0xffU));
 }
 
+static constexpr int kDetourArgSaveRestoreSize = 16;
+
+static void append_detour_arg_save(std::vector<uint8_t> &out) {
+    // stp x0, x1, [sp, #-32]!
+    append_word(out, 0xa9be07e0U);
+    // stp x2, x3, [sp, #16]
+    append_word(out, 0xa9010fe2U);
+}
+
+static void append_detour_arg_restore(std::vector<uint8_t> &out) {
+    // ldp x2, x3, [sp, #16]
+    append_word(out, 0xa9410fe2U);
+    // ldp x0, x1, [sp], #32
+    append_word(out, 0xa8c207e0U);
+}
+
 static std::vector<uint8_t> make_cpp_func_wrapper(
     const std::vector<std::string> &regs,
     uint64_t wrapper_va, uint64_t plugin_va) {
-    (void)regs;
     std::vector<uint8_t> out;
 
-    // The call site prepares the first C++ argument in w0. Preserve the
-    // caller's LR, then expose the C++ return value in x1.
+    // Preserve the caller's LR, then marshal declared call-site registers.
     append_word(out, 0xa9bf7bfdU); // stp x29, x30, [sp, #-16]!
+    for (size_t i = 0; i < regs.size() && i < 8; ++i) {
+        auto move = mov_insn((int)i, reg_num(regs[i]), reg_is64(regs[i]));
+        out.insert(out.end(), move.begin(), move.end());
+    }
     auto branch = armcave::aarch64::make_branch_sequence(
         wrapper_va + out.size(), plugin_va, true);
     out.insert(out.end(), branch.begin(), branch.end());
@@ -109,7 +127,9 @@ int hook_dispatch_size(int handler_count, int original_size, bool override_origi
                        bool strip_pac) {
     ensure_cave_frame();
     int save_size = (int)g_cave_frame.save.size() - (strip_pac ? 0 : 4);
-    return save_size + handler_count * (int)armcave::aarch64::kMaxBranchSequenceBytes +
+    int arg_state_size = override_original ? 0 : kDetourArgSaveRestoreSize;
+    return save_size + handler_count * ((int)armcave::aarch64::kMaxBranchSequenceBytes +
+                                         arg_state_size) +
            (int)g_cave_frame.restore.size() +
            (override_original ? (int)g_cave_frame.ret.size() :
             (int)armcave::aarch64::max_relocated_size((size_t)original_size) +
@@ -137,10 +157,16 @@ std::vector<uint8_t> build_hook_dispatch(
     uint64_t call_cursor = calls_va;
     for (auto handler_va : handler_vas)
     {
+        std::vector<uint8_t> handler_call;
+        if (!override_original)
+            append_detour_arg_save(handler_call);
         auto call = armcave::aarch64::make_branch_sequence(
-            call_cursor, handler_va, true);
-        call_cursor += call.size();
-        calls.push_back(std::move(call));
+            call_cursor + handler_call.size(), handler_va, true);
+        handler_call.insert(handler_call.end(), call.begin(), call.end());
+        if (!override_original)
+            append_detour_arg_restore(handler_call);
+        call_cursor += handler_call.size();
+        calls.push_back(std::move(handler_call));
     }
     uint64_t resume_va = call_cursor + g_cave_frame.restore.size();
     std::vector<uint8_t> relocated;

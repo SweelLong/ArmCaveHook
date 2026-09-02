@@ -35,6 +35,7 @@ struct PluginBlob {
     std::vector<RelocEntry> relocs;
     std::map<std::string, int> section_offsets;
     std::map<std::string, int> symbol_offsets;
+    std::map<std::string, int> data_symbol_offsets;
     std::map<uint64_t, int> asm_offsets;
     std::map<uint64_t, int> cpp_func_offsets;
     std::vector<std::string> register_args;

@@ -202,11 +202,15 @@ static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
                 }
                 else if (k == "args" && act.kind == "new_asm_func") act.data = v;
                 else if (k == "signature") act.signature = v;
-                else if (k == "symbol") act.symbol = v;
+                else if (k == "symbol") {
+                    if (act.kind == "patch_adrl_data") act.data_symbol = v;
+                    else act.symbol = v;
+                }
                 else if (k == "objc_class") act.objc_class = v;
                 else if (k == "selector") act.selector = v;
                 else if (k == "swift") act.swift_name = v;
                 else if (k == "handler") act.handler = v;
+                else if (k == "reg" && act.kind == "patch_adrl_data") act.data_register = v;
                 else if (k == "segment") act.segment = v;
                 else if (k == "size") act.size = atoi(v.c_str());
                 else if (k == "expected") {
@@ -270,6 +274,31 @@ static std::map<std::string, int> symbol_offsets(BinaryImage *obj, BinarySection
             out[name] = off;
             if (name[0] == '_') out[name.substr(1)] = off;
         }
+    }
+    return out;
+}
+
+static std::map<std::string, int> data_symbol_offsets(
+    BinaryImage *obj, const std::map<std::string, int> &section_offsets) {
+    std::map<std::string, int> out;
+    const auto &sections = obj->sections();
+    for (const auto &sym : obj->symbols()) {
+        if (sym.name.empty() || sym.undefined() || sym.section_index == 0 ||
+            sym.section_index > sections.size())
+            continue;
+        const auto &section = sections[sym.section_index - 1];
+        auto section_offset = section_offsets.find(section.name);
+        if (section_offset == section_offsets.end())
+            continue;
+        uint64_t relative = sym.value;
+        if (section.virtual_address <= sym.value &&
+            sym.value < section.virtual_address + section.size)
+            relative = sym.value - section.virtual_address;
+        if (relative >= section.size)
+            continue;
+        int offset = section_offset->second + (int)relative;
+        out[sym.name] = offset;
+        if (sym.name[0] == '_') out[sym.name.substr(1)] = offset;
     }
     return out;
 }
@@ -489,6 +518,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     }
     while (extra.size() % 16 != 0) extra.push_back(0);
     blob.extra = extra;
+    blob.data_symbol_offsets = data_symbol_offsets(mo.bin.get(), blob.section_offsets);
 
     bool has_addend = false;
     int64_t pending_addend = 0;
@@ -593,6 +623,18 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     }
 
     for (const auto &action : blob.declarations) {
+        if (action.kind == "patch_adrl_data") {
+            if (action.data_symbol.empty() || action.data_register.empty())
+                throw std::runtime_error("patch_adrl_data requires a variable and register in " +
+                                         path.string());
+            if (action.size < 8)
+                throw std::runtime_error("patch_adrl_data has an invalid patch size in " +
+                                         path.string());
+            if (blob.data_symbol_offsets.find(action.data_symbol) == blob.data_symbol_offsets.end())
+                throw std::runtime_error("patch_adrl_data variable is not local to plugin: " +
+                                         action.data_symbol);
+            continue;
+        }
         if (action.kind != "patch_asm_func") continue;
         if (!action.has_function_id)
             throw std::runtime_error("patch_asm_func is missing its function id in " +

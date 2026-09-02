@@ -13,6 +13,8 @@ struct HookAction {
     std::string selector;
     std::string swift_name;
     std::string handler;
+    std::string data_symbol;
+    std::string data_register;
     std::string segment = "auto";
     std::vector<std::string> register_args;
     int size = 0;

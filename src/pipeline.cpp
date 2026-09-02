@@ -8,6 +8,7 @@
 #include "apple_metadata.h"
 #include "symbols.h"
 #include "patch_script.h"
+#include "aarch64/encoder.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -124,6 +125,25 @@ static std::string make_plugin_seg_name(const std::string &plugin,
     return base;
 }
 
+static std::string make_plugin_data_seg_name(const std::string &code_name,
+                                             std::set<std::string> &used) {
+    constexpr size_t kMaxSegmentName = 14;
+    const std::string suffix = "_data";
+    std::string base = code_name;
+    if (base.size() + suffix.size() > kMaxSegmentName)
+        base.resize(kMaxSegmentName - suffix.size());
+    std::string candidate = base + suffix;
+    if (used.insert(candidate).second)
+        return candidate;
+
+    std::string hash_suffix = "_d" + sha1_hex3(code_name);
+    base = code_name.substr(0, kMaxSegmentName - hash_suffix.size());
+    candidate = base + hash_suffix;
+    if (!used.insert(candidate).second)
+        throw std::runtime_error("duplicate plugin data segment name: " + candidate);
+    return candidate;
+}
+
 static bool has_plugin_segment(BinaryImage &binary, const std::string &name) {
     std::string target = seg_name(binary, name);
     if (binary.is_macho()) {
@@ -159,6 +179,28 @@ static std::vector<uint8_t> patch_payload(const HookAction &action) {
         return payload;
     }
     throw std::runtime_error("unsupported patch action");
+}
+
+static int asm_register_number(const std::string &name) {
+    if (name.size() < 2 || (name[0] != 'x' && name[0] != 'X'))
+        throw std::runtime_error("patch_adrl_data requires an x-register");
+    char *end = nullptr;
+    long value = strtol(name.c_str() + 1, &end, 10);
+    if (!end || *end != '\0' || value < 0 || value > 31)
+        throw std::runtime_error("patch_adrl_data has an invalid register: " + name);
+    return (int)value;
+}
+
+static std::vector<uint8_t> patch_data_payload(const HookAction &action,
+                                               const PluginBlob &blob,
+                                               uint64_t data_va) {
+    auto it = blob.data_symbol_offsets.find(action.data_symbol);
+    if (it == blob.data_symbol_offsets.end())
+        throw std::runtime_error("patch_adrl_data cannot find variable: " +
+                                 action.data_symbol);
+    uint64_t target = data_va + (uint64_t)it->second;
+    return armcave::aarch64::make_address_sequence(
+        action.address, target, (uint8_t)asm_register_number(action.data_register));
 }
 
 static bool matches_expected(const std::filesystem::path &output_path,
@@ -238,6 +280,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     };
 
     std::vector<HookAction *> direct;
+    std::vector<std::pair<Compiled *, HookAction *>> data_patches;
     std::vector<std::pair<Compiled *, HookAction *>> asm_call_patches;
     std::map<uint64_t, HookSite> replace_sites;
     std::map<uint64_t, HookSite> detour_sites;
@@ -280,6 +323,9 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
 
             if (action.kind == "patch_asm") {
                 direct.push_back(&action);
+            } else if (action.kind == "patch_adrl_data") {
+                cp.has_hooks = true;
+                data_patches.push_back({&cp, &action});
             } else if (action.kind == "patch_asm_func") {
                 cp.has_hooks = true;
                 asm_call_patches.push_back({&cp, &action});
@@ -321,6 +367,8 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         std::string prefix = cp.requested_segment.empty()
             ? cp.blob.default_segment : cp.requested_segment;
         cp.segment_name = make_plugin_seg_name(cp.spec->name, prefix, used_segments);
+        if (cp.blob.has_writable_extra)
+            cp.data_segment_name = make_plugin_data_seg_name(cp.segment_name, used_segments);
         for (auto &action : cp.blob.declarations)
             if (action.kind == "hook_replace" || action.kind == "hook_detour")
                 action.segment = cp.segment_name;
@@ -332,8 +380,8 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         if (has_plugin_segment(binary, cp.segment_name))
             conflict = seg_name(binary, cp.segment_name);
         else if (cp.blob.has_writable_extra &&
-                 has_plugin_segment(binary, cp.segment_name + "_data"))
-            conflict = seg_name(binary, cp.segment_name + "_data");
+                 has_plugin_segment(binary, cp.data_segment_name))
+            conflict = seg_name(binary, cp.data_segment_name);
         if (!conflict.empty())
             throw std::runtime_error(
                 cp.spec->name + ": input already contains plugin segment " +
@@ -427,7 +475,6 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         cp.segment_size = std::max(cursor, 4);
         cp.content.resize(cp.segment_size, 0);
         if (cp.blob.has_writable_extra) {
-            cp.data_segment_name = cp.segment_name + "_data";
             if (!verified_data_segments.insert(cp.data_segment_name).second)
                 throw std::runtime_error("plugin data segment is not unique: " +
                                          cp.data_segment_name);
@@ -508,6 +555,18 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                 action->kind == "patch_asm_func");
             place(cp.content, offset, wrapper);
         }
+    }
+
+    for (auto &[cp, action] : data_patches) {
+        uint64_t data_va = cp->data_segment_va;
+        auto payload = patch_data_payload(*action, cp->blob, data_va);
+        if ((int)payload.size() > action->size)
+            throw std::runtime_error("patch_adrl_data needs a larger patch window at 0x" +
+                                     std::to_string(action->address));
+        printf("[patch_adrl_data] 0x%llx -> %s size=%zu\n",
+               (unsigned long long)action->address,
+               action->data_symbol.c_str(), payload.size());
+        patch_bytes_va(output_path, output_path, action->address, payload);
     }
 
     auto handler_va = [&](Compiled *cp, HookAction *action) {
