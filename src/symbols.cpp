@@ -1,5 +1,6 @@
 #include "symbols.h"
 #include "compiler.h"
+#include "aarch64/decoder.h"
 #include "aarch64/encoder.h"
 #include <cstring>
 #include <set>
@@ -46,6 +47,109 @@ static uint64_t resolve_armcave_data(const std::string &symbol_name) {
     return resolve_marker(symbol_name, "armcave_data_");
 }
 
+static std::optional<uint64_t> read_u64(BinaryImage *binary, uint64_t address) {
+    auto offset = binary->virtual_address_to_offset(address);
+    if (!offset || *offset > binary->data().size() ||
+        sizeof(uint64_t) > binary->data().size() - *offset)
+        return std::nullopt;
+    uint64_t value = 0;
+    memcpy(&value, binary->data().data() + *offset, sizeof(value));
+    return value;
+}
+
+static std::optional<uint32_t> read_u32(BinaryImage *binary, uint64_t address) {
+    auto offset = binary->virtual_address_to_offset(address);
+    if (!offset || *offset > binary->data().size() ||
+        sizeof(uint32_t) > binary->data().size() - *offset)
+        return std::nullopt;
+    uint32_t value = 0;
+    memcpy(&value, binary->data().data() + *offset, sizeof(value));
+    return value;
+}
+
+static std::optional<uint64_t> pointer_target(BinaryImage *binary,
+                                               uint64_t address,
+                                               uint64_t raw) {
+    if (const auto *fixup = binary->chained_fixup(address)) {
+        if (fixup->bind || !fixup->target)
+            return std::nullopt;
+        raw = fixup->target;
+    }
+    const uint64_t candidates[] = {
+        raw,
+        raw & 0x0000ffffffffffffULL,
+        raw & ~0x7ULL,
+    };
+    for (uint64_t candidate : candidates)
+        if (binary->virtual_address_to_offset(candidate))
+            return candidate;
+    return std::nullopt;
+}
+
+static std::optional<std::string> read_string(BinaryImage *binary, uint64_t address) {
+    auto offset = binary->virtual_address_to_offset(address);
+    if (!offset || *offset >= binary->data().size())
+        return std::nullopt;
+    size_t end = (size_t)*offset;
+    size_t limit = std::min(binary->data().size(), end + (size_t)256);
+    while (end < limit && binary->data()[end]) {
+        unsigned char c = binary->data()[end];
+        if (c < 0x20 || c > 0x7e)
+            return std::nullopt;
+        ++end;
+    }
+    if (end == limit)
+        return std::nullopt;
+    return std::string((const char *)binary->data().data() + *offset,
+                       end - (size_t)*offset);
+}
+
+static std::optional<uint64_t> objc_stub_selector_ref(BinaryImage *binary,
+                                                       uint64_t stub) {
+    auto first = read_u32(binary, stub);
+    auto second = read_u32(binary, stub + 4);
+    if (!first || !second)
+        return std::nullopt;
+    auto adrp = armcave::aarch64::decode(*first, stub);
+    if (adrp.kind != armcave::aarch64::InstructionKind::ADRP ||
+        adrp.register_index != 1 ||
+        (*second & 0xffc003ffU) != 0xf9400021U)
+        return std::nullopt;
+    uint64_t offset = (uint64_t)((*second >> 10) & 0xfffU) * 8;
+    return adrp.target + offset;
+}
+
+static std::string objc_selector(const std::string &symbol_name) {
+    const std::string prefix = "objc_msgSend$";
+    auto pos = symbol_name.find(prefix);
+    return pos == std::string::npos ? std::string() :
+        symbol_name.substr(pos + prefix.size());
+}
+
+static uint64_t resolve_objc_stub(BinaryImage *binary,
+                                  const std::string &symbol_name) {
+    std::string selector = objc_selector(symbol_name);
+    if (selector.empty())
+        return 0;
+    const BinarySection *stubs = binary->section("__objc_stubs");
+    if (!stubs)
+        return 0;
+    for (uint64_t stub = stubs->virtual_address;
+         stub + 8 <= stubs->virtual_address + stubs->size;
+         stub += 32) {
+        auto selref = objc_stub_selector_ref(binary, stub);
+        if (!selref)
+            continue;
+        auto raw = read_u64(binary, *selref);
+        if (!raw)
+            continue;
+        auto name = pointer_target(binary, *selref, *raw);
+        if (name && read_string(binary, *name) == selector)
+            return stub;
+    }
+    return 0;
+}
+
 static uint64_t resolve_via_symbol_table(BinaryImage *binary, const std::string &symbol_name) {
     if (binary->is_elf()) {
         for (const auto &candidate : names(symbol_name)) {
@@ -59,7 +163,7 @@ static uint64_t resolve_via_symbol_table(BinaryImage *binary, const std::string 
     BinarySection *stubs = nullptr;
     for (auto &s : binary->sections())
         if (s.name == "__stubs") { stubs = &s; break; }
-    if (!stubs) return 0;
+    if (!stubs) return resolve_objc_stub(binary, symbol_name);
     auto ns = names(symbol_name);
     std::set<std::string> name_set(ns.begin(), ns.end());
     int size = stubs->reserved2 ? (int)stubs->reserved2 : 12;
@@ -69,7 +173,7 @@ static uint64_t resolve_via_symbol_table(BinaryImage *binary, const std::string 
         if (symbol && name_set.count(*symbol))
             return stubs->virtual_address + (uint64_t)i * (uint64_t)size;
     }
-    return 0;
+    return resolve_objc_stub(binary, symbol_name);
 }
 
 static std::string demangled_name(const std::string &name) {
@@ -159,15 +263,32 @@ std::vector<std::pair<std::string, std::string>> list_available_symbols(
         return out;
     }
     BinarySection *stubs = binary->section("__stubs");
-    if (!stubs) return out;
-    int size = stubs->reserved2 ? (int)stubs->reserved2 : 12;
-    for (int i = 0; i < (int)stubs->size / size; i++) {
-        int idx = (int)stubs->reserved1 + i;
-        auto *symbol = binary->indirect_symbol(idx);
-        if (symbol && !symbol->empty()) {
-            char addr[32];
-            snprintf(addr, sizeof(addr), "0x%llx", (unsigned long long)(stubs->virtual_address + i * size));
-            out.emplace_back(*symbol, addr);
+    if (stubs) {
+        int size = stubs->reserved2 ? (int)stubs->reserved2 : 12;
+        for (int i = 0; i < (int)stubs->size / size; i++) {
+            int idx = (int)stubs->reserved1 + i;
+            auto *symbol = binary->indirect_symbol(idx);
+            if (symbol && !symbol->empty()) {
+                char addr[32];
+                snprintf(addr, sizeof(addr), "0x%llx", (unsigned long long)(stubs->virtual_address + i * size));
+                out.emplace_back(*symbol, addr);
+            }
+        }
+    }
+    BinarySection *objc_stubs = binary->section("__objc_stubs");
+    if (objc_stubs) {
+        for (uint64_t stub = objc_stubs->virtual_address;
+             stub + 8 <= objc_stubs->virtual_address + objc_stubs->size;
+             stub += 32) {
+            auto selref = objc_stub_selector_ref(binary.get(), stub);
+            auto raw = selref ? read_u64(binary.get(), *selref) : std::nullopt;
+            auto name = raw && selref ? pointer_target(binary.get(), *selref, *raw) : std::nullopt;
+            auto selector = name ? read_string(binary.get(), *name) : std::nullopt;
+            if (selector) {
+                char addr[32];
+                snprintf(addr, sizeof(addr), "0x%llx", (unsigned long long)stub);
+                out.emplace_back("_objc_msgSend$" + *selector, addr);
+            }
         }
     }
     return out;

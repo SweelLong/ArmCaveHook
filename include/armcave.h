@@ -1,14 +1,6 @@
 #pragma once
 
-typedef unsigned char u8;
-typedef unsigned short u16;
-typedef unsigned int u32;
-typedef unsigned long u64;
-typedef signed char i8;
-typedef signed short i16;
-typedef signed int i32;
-typedef signed long i64;
-typedef unsigned long addr_t;
+#include <cstdint>
 
 #ifdef ARMCAVE_ELF
 extern "C" int armcave_android_log_print(int priority, const char *tag,
@@ -307,29 +299,29 @@ constexpr armcave_patch_hex_meta armcave_make_patch_hex_meta_va(
     extern type name asm(symbol)
 
 template <typename T>
-static inline T read_mem(addr_t addr) {
+static inline T read_mem(uintptr_t addr) {
     return *(volatile T *)addr;
 }
 
 template <typename T>
-static inline void write_mem(addr_t addr, T value) {
+static inline void write_mem(uintptr_t addr, T value) {
     *(volatile T *)addr = value;
 }
 
 
-static inline addr_t resolve_vfunc(addr_t obj, addr_t offset) {
-    addr_t vt = read_mem<addr_t>(obj);
-    return vt ? read_mem<addr_t>(vt + offset) : 0;
+static inline uintptr_t resolve_vfunc(uintptr_t obj, uintptr_t offset) {
+    uintptr_t vt = read_mem<uintptr_t>(obj);
+    return vt ? read_mem<uintptr_t>(vt + offset) : 0;
 }
 
-static inline addr_t read_typeinfo(addr_t obj) {
-    addr_t vt = read_mem<addr_t>(obj);
-    return vt ? read_mem<addr_t>(vt - sizeof(addr_t)) : 0;
+static inline uintptr_t read_typeinfo(uintptr_t obj) {
+    uintptr_t vt = read_mem<uintptr_t>(obj);
+    return vt ? read_mem<uintptr_t>(vt - sizeof(uintptr_t)) : 0;
 }
 
 #define armcave_resolve_addr_impl(va, id) \
     ({ \
         extern char id asm("__armcave_data_" armcave_str(va)); \
-        (addr_t)&id; \
+        (uintptr_t)&id; \
     })
 #define resolve_addr(va) armcave_resolve_addr_impl(va, armcave_unique(armcave_data_))

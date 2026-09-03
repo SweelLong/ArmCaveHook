@@ -369,6 +369,9 @@ std::vector<uint8_t> extract_cave_asm_ret() {
 
 static std::string normalize_absolute_branches(const std::string &source,
                                                uint64_t address) {
+    static const std::regex adrl_re(
+        R"(^([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        std::regex::icase);
     static const std::regex branch_re(
         R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)(b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
         std::regex::icase);
@@ -384,7 +387,15 @@ static std::string normalize_absolute_branches(const std::string &source,
     uint64_t offset = 0;
     while (std::getline(input, line)) {
         std::smatch match;
-        if (std::regex_match(line, match, branch_re)) {
+        if (std::regex_match(line, match, adrl_re)) {
+            // Darwin's AArch64 assembler does not accept the GNU/LLVM adrl
+            // pseudo-instruction.  Expand it to the pair of Mach-O page
+            // relocations used by adrp/add while retaining one source line.
+            line = match[1].str() + "adrp " + match[2].str() + ", " +
+                   match[3].str() + "@PAGE; add " + match[2].str() + ", " +
+                   match[2].str() + ", " + match[3].str() + "@PAGEOFF" +
+                   match[4].str();
+        } else if (std::regex_match(line, match, branch_re)) {
             uint64_t target = 0;
             try {
                 target = std::stoull(match[3].str(), nullptr, 0);
