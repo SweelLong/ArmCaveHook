@@ -56,7 +56,8 @@ std::vector<uint8_t> extract_cave_asm_restore();
 std::vector<uint8_t> extract_cave_asm_ret();
 
 std::vector<uint8_t> assemble_aarch64(const std::string &source,
-                                      uint64_t address = 0);
+                                      uint64_t address = 0,
+                                      const std::map<std::string, uint64_t> &symbol_targets = {});
 
 PluginBlob compile_plugin(const std::filesystem::path &path,
                           const std::filesystem::path *target_binary);

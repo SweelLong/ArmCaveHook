@@ -22,6 +22,9 @@
 #include <fstream>
 #include <sstream>
 #include <chrono>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 static constexpr int kMaxHookWindow = 20;
 
@@ -155,15 +158,59 @@ static bool has_plugin_segment(BinaryImage &binary, const std::string &name) {
     return binary.section(target) != nullptr;
 }
 
-static std::string normalize_asm_text(std::string asm_text) {
-    std::replace(asm_text.begin(), asm_text.end(), ';', '\n');
-    size_t pos = 0;
-    while ((pos = asm_text.find("\\n", pos)) != std::string::npos) {
-        asm_text.replace(pos, 2, "\n");
-        ++pos;
+class PluginProgress {
+public:
+    explicit PluginProgress(const std::vector<PluginSpec> &plugins)
+        : names(), values(plugins.size(), 0), interactive(false), rendered(false) {
+        for (const auto &plugin : plugins)
+            names.push_back(plugin.name);
+#ifndef _WIN32
+        interactive = ::isatty(fileno(stdout)) != 0;
+#endif
     }
-    return asm_text;
-}
+
+    void update(size_t index, int percent) {
+        if (index >= values.size())
+            return;
+        if (percent < values[index])
+            return;
+        values[index] = std::min(percent, 100);
+        if (interactive)
+            render();
+    }
+
+    void finish() {
+        for (auto &value : values)
+            value = 100;
+        render();
+    }
+
+private:
+    void render() {
+        if (rendered && interactive)
+            std::printf("\033[%zuA", values.size());
+        for (size_t i = 0; i < values.size(); ++i) {
+            std::string name = names[i];
+            if (name.size() > 24)
+                name.resize(24);
+            if (interactive)
+                std::printf("\033[2K");
+            std::printf("[%zu/%zu] %-24s [", i + 1, values.size(), name.c_str());
+            const int width = 24;
+            const int filled = width * values[i] / 100;
+            for (int cell = 0; cell < width; ++cell)
+                std::putchar(cell < filled ? '#' : '-');
+            std::printf("] %3d%%\n", values[i]);
+        }
+        std::fflush(stdout);
+        rendered = true;
+    }
+
+    std::vector<std::string> names;
+    std::vector<int> values;
+    bool interactive;
+    bool rendered;
+};
 
 static std::vector<uint8_t> parse_hex_payload(const std::string &text) {
     static const std::string separators = " \t\r\n,;";
@@ -222,65 +269,6 @@ static bool references_data_label(const HookAction &action,
     return false;
 }
 
-static std::string normalize_registered_labels(
-    std::string source, uint64_t address,
-    const std::map<std::string, uint64_t> &label_targets) {
-    if (!address || label_targets.empty())
-        return source;
-
-    static const std::regex branch_re(
-        R"(^([ \t]*(?:b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
-        std::regex::icase);
-    static const std::regex adrl_re(
-        R"(^([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?[ \t]*([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
-        std::regex::icase);
-    static const std::regex adrp_re(
-        R"(^([ \t]*adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
-        std::regex::icase);
-    static const std::regex add_re(
-        R"(^([ \t]*add[ \t]+[xw][0-9]+[ \t]*,[ \t]*[xw][0-9]+[ \t]*,)[ \t]*#?[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
-        std::regex::icase);
-    static const std::regex load_re(
-        R"(^([ \t]*(?:ldr|str)[ \t]+[xw][0-9]+[ \t]*,[ \t]*\[[ \t]*x[0-9]+[ \t]*,)[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)[ \t]*\](.*)$)",
-        std::regex::icase);
-    std::istringstream input(normalize_asm_text(source));
-    std::ostringstream output;
-    std::string line;
-    while (std::getline(input, line)) {
-        std::smatch match;
-        if (std::regex_match(line, match, branch_re)) {
-            auto target = label_targets.find(match[2].str());
-            if (target != label_targets.end())
-                line = match[1].str() + std::to_string(target->second) + match[3].str();
-        } else if (std::regex_match(line, match, adrl_re)) {
-            auto target = label_targets.find(match[3].str());
-            if (target != label_targets.end()) {
-                line = match[1].str() + "adrp " + match[2].str() + ", " +
-                       std::to_string(target->second) + "\n" + match[1].str() +
-                       "add " + match[2].str() + ", " + match[2].str() + ", #" +
-                       std::to_string(target->second & 0xfffU) + match[4].str();
-            }
-        } else if (std::regex_match(line, match, adrp_re)) {
-            auto target = label_targets.find(match[2].str());
-            if (target != label_targets.end())
-                line = match[1].str() + std::to_string(target->second) + match[3].str();
-        } else if (std::regex_match(line, match, add_re)) {
-            auto target = label_targets.find(match[2].str());
-            if (target != label_targets.end())
-                line = match[1].str() + " #" +
-                       std::to_string(target->second & 0xfffU) + match[3].str();
-        } else if (std::regex_match(line, match, load_re)) {
-            auto target = label_targets.find(match[2].str());
-            if (target != label_targets.end())
-                line = match[1].str() + " #" +
-                       std::to_string(target->second & 0xfffU) + "]" + match[3].str();
-        }
-        output << line;
-        if (!input.eof()) output << '\n';
-    }
-    return output.str();
-}
-
 static std::map<std::string, uint64_t> registered_function_targets(
     const PluginBlob &blob, uint64_t code_va, uint64_t data_va) {
     std::map<std::string, uint64_t> targets;
@@ -295,9 +283,7 @@ static std::vector<uint8_t> patch_payload(
     const HookAction &action,
     const std::map<std::string, uint64_t> &function_targets = {}) {
     if (action.kind == "patch_asm") {
-        auto source = normalize_registered_labels(
-            action.data, action.address, function_targets);
-        auto payload = assemble_aarch64(normalize_asm_text(source), action.address);
+        auto payload = assemble_aarch64(action.data, action.address, function_targets);
         if (action.size) {
             if (action.size % (int)payload.size() != 0)
                 throw std::runtime_error("patch_asm size must be a multiple of assembled payload size");
@@ -320,8 +306,7 @@ static bool matches_expected(const std::filesystem::path &output_path,
                              const std::map<std::string, uint64_t> &function_targets = {}) {
     auto expected = action.kind == "patch_hex"
         ? parse_hex_payload(action.expected)
-        : assemble_aarch64(normalize_asm_text(normalize_registered_labels(
-              action.expected, action.address, function_targets)), action.address);
+        : assemble_aarch64(action.expected, action.address, function_targets);
     if (expected.size() != payload.size())
         throw std::runtime_error("expected ASM must cover the same number of bytes as the patch");
     auto &binary = parse_binary(output_path);
@@ -355,6 +340,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     struct Compiled {
         PluginSpec *spec;
         PluginBlob blob;
+        size_t progress_index = 0;
         bool has_hooks = false;
         std::string requested_segment;
         std::string segment_name;
@@ -370,15 +356,22 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         std::vector<uint8_t> data_content;
     };
     std::vector<Compiled> compiled;
-    for (auto &spec : plugins) {
+    PluginProgress progress(plugins);
+    for (size_t i = 0; i < plugins.size(); ++i) {
+        auto &spec = plugins[i];
         Compiled c;
         c.spec = &spec;
+        c.progress_index = i;
         c.blob = compile_plugin(spec.path, &input_path);
         spec.actions = c.blob.declarations;
         if (!c.blob.declarations.empty())
             compiled.push_back(std::move(c));
+        progress.update(i, 15);
     }
-    if (compiled.empty()) return false;
+    if (compiled.empty()) {
+        progress.finish();
+        return false;
+    }
 
     auto &binary = parse_binary(std::filesystem::exists(output_path) ? output_path : input_path);
 
@@ -458,6 +451,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                 throw std::runtime_error(cp.spec->name + ": unsupported action " + action.kind);
             }
         }
+        progress.update(cp.progress_index, 35);
     }
 
     std::set<std::string> used_segments;
@@ -570,6 +564,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
             cp.data_segment_size = (cp.data_segment_size + 15) & ~15;
             cp.data_content.resize(cp.data_segment_size, 0);
         }
+        progress.update(cp.progress_index, 55);
     }
 
     for (auto &cp : compiled) {
@@ -638,6 +633,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                 action->kind == "new_cpp_func");
             place(cp.content, offset, wrapper);
         }
+        progress.update(cp.progress_index, 72);
     }
 
     for (auto &[cp, action] : direct) {
@@ -660,10 +656,13 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         auto payload = patch_payload(*action, targets);
         if (action->has_expected && !matches_expected(output_path, *action, payload, targets))
             continue;
-        printf("[%s] 0x%llx size=%zu\n", action->kind.c_str(),
-               (unsigned long long)action->address, payload.size());
         patch_bytes_va(output_path, output_path, action->address, payload);
     }
+    for (auto &cp : compiled)
+        if (!cp.has_hooks)
+            progress.update(cp.progress_index, 100);
+        else
+            progress.update(cp.progress_index, 85);
 
     // Direct patches are applied after layout so registered function labels have
     // final addresses. Refresh hook windows because a direct patch may share a
@@ -705,29 +704,22 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         if (cp.blob.has_writable_extra) {
             write_at_offset(output_path, cp.data_segment_file_offset,
                             cp.data_content, cp.data_segment_size);
-            printf("[plugin] %s segment=%s size=%d (data segment=%s size=%d)\n",
-                   cp.spec->name.c_str(), cp.segment_name.c_str(), cp.segment_size,
-                   cp.data_segment_name.c_str(), cp.data_segment_size);
-        } else {
-            printf("[plugin] %s segment=%s size=%d\n", cp.spec->name.c_str(),
-                   cp.segment_name.c_str(), cp.segment_size);
         }
+        progress.update(cp.progress_index, 95);
     }
 
     auto patch_sites = [&](auto &sites) {
         for (auto &[va, site] : sites) {
             uint64_t control_va = site.owner->segment_va + site.control_offset;
-            printf("[%s] 0x%llx segment=%s handlers=%zu\n",
-                   site.overrides_original ? "hook_replace" : "hook_detour",
-                   (unsigned long long)va, site.owner->segment_name.c_str(),
-                   site.handlers.size());
             patch_hook_window(output_path, output_path, va, site.hook_size, control_va);
-            printf("[done] 0x%llx\n", (unsigned long long)va);
+            progress.update(site.owner->progress_index, 100);
         }
     };
 
     patch_sites(detour_sites);
     patch_sites(replace_sites);
+
+    progress.finish();
 
     return true;
 }

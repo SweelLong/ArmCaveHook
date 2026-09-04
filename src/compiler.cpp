@@ -200,6 +200,42 @@ static std::string split_asm_statements(const std::vector<std::string> &lines) {
     return source;
 }
 
+static std::string normalize_asm_text(std::string source) {
+    std::string normalized;
+    normalized.reserve(source.size());
+    bool quoted = false;
+    bool escaped = false;
+    for (size_t i = 0; i < source.size(); ++i) {
+        char c = source[i];
+        if (escaped) {
+            normalized += c;
+            escaped = false;
+            continue;
+        }
+        if (c == '\\' && quoted) {
+            normalized += c;
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            quoted = !quoted;
+            normalized += c;
+            continue;
+        }
+        if (!quoted && c == ';') {
+            normalized += '\n';
+            continue;
+        }
+        if (!quoted && c == '\\' && i + 1 < source.size() && source[i + 1] == 'n') {
+            normalized += '\n';
+            ++i;
+            continue;
+        }
+        normalized += c;
+    }
+    return normalized;
+}
+
 static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
     std::vector<HookAction> items;
     std::string all((const char *)data.data(), data.size());
@@ -471,48 +507,96 @@ static std::string normalize_absolute_branches(const std::string &source,
     return output.str();
 }
 
-std::vector<uint8_t> assemble_aarch64(const std::string &source, uint64_t address) {
-    std::string td = tempdir("armcave-asm-");
-    auto src = std::filesystem::path(td) / "a.s";
-    auto out = std::filesystem::path(td) / "a.o";
-    auto error = std::filesystem::path(td) / "a.err";
-    {
-        std::ofstream f(src);
-        f << ".text\n" << normalize_absolute_branches(source, address) << "\n";
+static std::string normalize_registered_labels(
+    std::string source, uint64_t address,
+    const std::map<std::string, uint64_t> &label_targets) {
+    if (!address || label_targets.empty())
+        return source;
+
+    static const std::regex branch_re(
+        R"(^([ \t]*(?:b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        std::regex::icase);
+    static const std::regex adrl_re(
+        R"(^([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?[ \t]*([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        std::regex::icase);
+    static const std::regex adrp_re(
+        R"(^([ \t]*adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        std::regex::icase);
+    static const std::regex add_re(
+        R"(^([ \t]*add[ \t]+[xw][0-9]+[ \t]*,[ \t]*[xw][0-9]+[ \t]*,)[ \t]*#?[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        std::regex::icase);
+    static const std::regex load_re(
+        R"(^([ \t]*(?:ldr|str)[ \t]+[xw][0-9]+[ \t]*,[ \t]*\[[ \t]*x[0-9]+[ \t]*,)[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)[ \t]*\](.*)$)",
+        std::regex::icase);
+    std::istringstream input(normalize_asm_text(source));
+    std::ostringstream output;
+    std::string line;
+    while (std::getline(input, line)) {
+        std::smatch match;
+        if (std::regex_match(line, match, branch_re)) {
+            auto target = label_targets.find(match[2].str());
+            if (target != label_targets.end())
+                line = match[1].str() + std::to_string(target->second) + match[3].str();
+        } else if (std::regex_match(line, match, adrl_re)) {
+            auto target = label_targets.find(match[3].str());
+            if (target != label_targets.end()) {
+                line = match[1].str() + "adrp " + match[2].str() + ", " +
+                       std::to_string(target->second) + "\n" + match[1].str() +
+                       "add " + match[2].str() + ", " + match[2].str() + ", #" +
+                       std::to_string(target->second & 0xfffU) + match[4].str();
+            }
+        } else if (std::regex_match(line, match, adrp_re)) {
+            auto target = label_targets.find(match[2].str());
+            if (target != label_targets.end())
+                line = match[1].str() + std::to_string(target->second) + match[3].str();
+        } else if (std::regex_match(line, match, add_re)) {
+            auto target = label_targets.find(match[2].str());
+            if (target != label_targets.end())
+                line = match[1].str() + " #" +
+                       std::to_string(target->second & 0xfffU) + match[3].str();
+        } else if (std::regex_match(line, match, load_re)) {
+            auto target = label_targets.find(match[2].str());
+            if (target != label_targets.end())
+                line = match[1].str() + " #" +
+                       std::to_string(target->second & 0xfffU) + "]" + match[3].str();
+        }
+        output << line;
+        if (!input.eof()) output << '\n';
     }
-    std::string cmd = shell_quote(clang_driver(false)) +
-                      " -target arm64-apple-macosx13.0 -c " + shell_quote(src.string()) +
-                      " -o " + shell_quote(out.string()) + compiler_error_redirect(error);
-    int rc = system(cmd.c_str());
-    if (rc != 0) {
-        std::ifstream input(error);
-        std::string detail((std::istreambuf_iterator<char>(input)),
-                           std::istreambuf_iterator<char>());
-        while (!detail.empty() && (detail.back() == '\n' || detail.back() == '\r'))
-            detail.pop_back();
-        if (detail.empty()) detail = "exit status " + std::to_string(rc);
-        throw std::runtime_error("AArch64 assembler failed: " + detail);
-    }
-    auto mo = open_macho(out.string());
-    if (!mo.bin)
-        throw std::runtime_error("AArch64 assembler produced an invalid object");
+    return output.str();
+}
+
+static MachO assemble_aarch64_object(
+    const std::string &source, uint64_t address,
+    const std::map<std::string, uint64_t> &symbol_targets);
+
+std::vector<uint8_t> assemble_aarch64(
+    const std::string &source, uint64_t address,
+    const std::map<std::string, uint64_t> &symbol_targets) {
+    auto mo = assemble_aarch64_object(source, address, symbol_targets);
     auto *sec = mo.section("__text");
     if (!sec)
         throw std::runtime_error("AArch64 assembler object has no __text section");
+    if (!sec->relocations.empty())
+        throw std::runtime_error("AArch64 patch contains unresolved symbol relocations");
     auto payload = sec->content(mo.bin->data());
     if (payload.empty())
         throw std::runtime_error("AArch64 assembler produced an empty payload");
     return payload;
 }
 
-static MachO assemble_aarch64_object(const std::string &source) {
-    std::string td = tempdir("armcave-asm-object-");
+static MachO assemble_aarch64_object(
+    const std::string &source, uint64_t address,
+    const std::map<std::string, uint64_t> &symbol_targets) {
+    std::string td = tempdir("armcave-asm-");
     auto src = std::filesystem::path(td) / "a.s";
     auto out = std::filesystem::path(td) / "a.o";
     auto error = std::filesystem::path(td) / "a.err";
     {
         std::ofstream f(src);
-        f << ".text\n" << normalize_absolute_branches(source, 0) << "\n";
+        auto normalized = normalize_registered_labels(
+            normalize_asm_text(source), address, symbol_targets);
+        f << ".text\n" << normalize_absolute_branches(normalized, address) << "\n";
     }
     std::string cmd = shell_quote(clang_driver(false)) +
                       " -target arm64-apple-macosx13.0 -c " + shell_quote(src.string()) +
@@ -524,11 +608,11 @@ static MachO assemble_aarch64_object(const std::string &source) {
         while (!detail.empty() && (detail.back() == '\n' || detail.back() == '\r'))
             detail.pop_back();
         if (detail.empty()) detail = "unknown assembler error";
-        throw std::runtime_error("AArch64 assembler failed for new_asm_func: " + detail);
+        throw std::runtime_error("AArch64 assembler failed: " + detail);
     }
     auto mo = open_macho(out.string());
     if (!mo.bin || !mo.section("__text"))
-        throw std::runtime_error("AArch64 assembler produced an invalid new_asm_func object");
+        throw std::runtime_error("AArch64 assembler produced an invalid object");
     return mo;
 }
 
@@ -698,7 +782,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         if (lines.empty())
             throw std::runtime_error("new_asm_func has an empty body in " + path.string());
         std::string source = split_asm_statements(lines);
-        auto asm_mo = assemble_aarch64_object(source);
+        auto asm_mo = assemble_aarch64_object(source, 0, {});
         auto *asm_text = asm_mo.section("__text");
         auto bytes = asm_text->content(asm_mo.bin->data());
         while (blob.text.size() % 4 != 0) blob.text.push_back(0);
@@ -709,6 +793,42 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         if (!blob.function_offsets.emplace(action.function_name,
                                            action.asm_offset).second)
             throw std::runtime_error("duplicate new function name in " + path.string());
+    }
+
+    // new_asm_func bodies are assembled as separate objects. References to
+    // data defined by the C++ plugin therefore arrive as undefined symbols in
+    // the assembly object and need to be rebound to the plugin data section.
+    for (auto &reloc : blob.relocs) {
+        if (!reloc.from_new_asm_func || reloc.symbol_name.empty() ||
+            (reloc.type != 0 && reloc.type != 3 && reloc.type != 4 &&
+             reloc.type != 5 && reloc.type != 6) || !reloc.symbol_section.empty())
+            continue;
+
+        const BinarySymbol *data_symbol = nullptr;
+        for (const auto &symbol : mo.bin->symbols()) {
+            if (symbol.undefined()) continue;
+            bool same_name = symbol.name == reloc.symbol_name;
+            bool symbol_has_prefix = symbol.name.size() == reloc.symbol_name.size() + 1 &&
+                symbol.name[0] == '_' && symbol.name.substr(1) == reloc.symbol_name;
+            bool reloc_has_prefix = reloc.symbol_name.size() == symbol.name.size() + 1 &&
+                reloc.symbol_name[0] == '_' &&
+                reloc.symbol_name.substr(1) == symbol.name;
+            if (same_name || symbol_has_prefix || reloc_has_prefix) {
+                data_symbol = &symbol;
+                break;
+            }
+        }
+        if (!data_symbol || data_symbol->section_index == 0 ||
+            data_symbol->section_index > mo.bin->sections().size())
+            continue;
+
+        const auto &section = mo.bin->sections()[data_symbol->section_index - 1];
+        if (section.name == "__text" || section.segment_name == "__TEXT" ||
+            section.virtual_address > data_symbol->value ||
+            data_symbol->value >= section.virtual_address + section.size)
+            continue;
+        reloc.symbol_section = section.name;
+        reloc.symbol_value = data_symbol->value - section.virtual_address;
     }
 
     for (const auto &action : blob.declarations) {
