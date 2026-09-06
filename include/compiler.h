@@ -55,9 +55,21 @@ std::vector<uint8_t> extract_cave_asm_save();
 std::vector<uint8_t> extract_cave_asm_restore();
 std::vector<uint8_t> extract_cave_asm_ret();
 
+// Numeric branch/page operands in plugin assembly are treated as absolute
+// VAs when they fall inside the target image's VA range.  The defaults keep
+// the historical Mach-O behavior where only VAs >= 0x100000000 were
+// recognized as absolute targets.
+struct AsmVaRange {
+    uint64_t min = 0x100000000ULL;
+    uint64_t max = ~0ULL;
+
+    static AsmVaRange of(const BinaryImage &binary);
+};
+
 std::vector<uint8_t> assemble_aarch64(const std::string &source,
                                       uint64_t address = 0,
-                                      const std::map<std::string, uint64_t> &symbol_targets = {});
+                                      const std::map<std::string, uint64_t> &symbol_targets = {},
+                                      const AsmVaRange &va_range = {});
 
 PluginBlob compile_plugin(const std::filesystem::path &path,
                           const std::filesystem::path *target_binary);

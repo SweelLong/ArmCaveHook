@@ -402,6 +402,8 @@ static uint64_t data_relocation_target(const RelocEntry &reloc,
                                        BinaryImage *binary,
                                        const std::map<std::string, int> &offsets,
                                        uint64_t text_va, uint64_t data_va) {
+    if (reloc.has_absolute_target)
+        return reloc.absolute_target + reloc.addend;
     uint64_t target = resolve_armcave_data(reloc.symbol_name);
     if (target) return target + reloc.addend;
     if (!reloc.symbol_section.empty())
@@ -477,6 +479,12 @@ resolve_plugin_relocs(
             patch_page21(text_buf, off, text_va + (uint64_t)off,
                          data_relocation_target(r, binary.get(), offsets,
                                                 text_va, data_va));
+
+        } else if (t == 7) {
+            // ARM64_RELOC_PAGEOFF12: the ADD half of an adrl expansion.
+            patch_pageoff12(text_buf, off,
+                            data_relocation_target(r, binary.get(), offsets,
+                                                   text_va, data_va));
 
         } else if (t == 6 && !name.empty()) {
             uint64_t target = data_relocation_target(r, binary.get(), offsets,

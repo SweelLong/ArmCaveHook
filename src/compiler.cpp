@@ -11,6 +11,7 @@
 #include <atomic>
 #include <stdexcept>
 #include <cctype>
+#include <algorithm>
 
 static std::filesystem::path project_root() {
 #ifdef ARMCAVE_PROJECT_ROOT
@@ -403,16 +404,45 @@ std::vector<uint8_t> extract_cave_asm_ret() {
     return std::vector<uint8_t>(all.begin() + 12, all.begin() + 16);
 }
 
+AsmVaRange AsmVaRange::of(const BinaryImage &binary) {
+    AsmVaRange range;
+    uint64_t lo = ~0ULL;
+    uint64_t hi = 0;
+    for (auto &segment : binary.segments()) {
+        if (!segment.virtual_size) continue;
+        lo = std::min(lo, segment.virtual_address);
+        hi = std::max(hi, segment.virtual_address + segment.virtual_size);
+    }
+    for (auto &section : binary.sections()) {
+        if (!section.size) continue;
+        lo = std::min(lo, section.virtual_address);
+        hi = std::max(hi, section.virtual_address + section.size);
+    }
+    if (lo < 0x1000) lo = 0x1000;
+    if (lo > hi) {
+        lo = 0x100000000ULL;
+        hi = ~0ULL;
+    }
+    range.min = lo;
+    range.max = hi;
+    return range;
+}
+
+static bool is_absolute_va(uint64_t target, const AsmVaRange &va_range) {
+    return target >= va_range.min && target <= va_range.max;
+}
+
 static std::string normalize_absolute_branches(const std::string &source,
-                                               uint64_t address) {
+                                               uint64_t address,
+                                               const AsmVaRange &va_range = {}) {
     static const std::regex adrl_re(
-        R"(^([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        R"(^((?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
         std::regex::icase);
     static const std::regex branch_re(
         R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)(b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
         std::regex::icase);
     static const std::regex adrp_re(
-        R"(^([ \t]*adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
+        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
         std::regex::icase);
     static const std::regex compare_branch_re(
         R"(^([ \t]*(?:(?:cbz|cbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*|(?:tbz|tbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*#[0-9]+[ \t]*,[ \t]*))(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
@@ -424,13 +454,18 @@ static std::string normalize_absolute_branches(const std::string &source,
     while (std::getline(input, line)) {
         std::smatch match;
         if (std::regex_match(line, match, adrl_re)) {
-            // Darwin's AArch64 assembler does not accept the GNU/LLVM adrl
-            // pseudo-instruction.  Expand it to the pair of Mach-O page
-            // relocations used by adrp/add while retaining one source line.
-            line = match[1].str() + "adrp " + match[2].str() + ", " +
-                   match[3].str() + "@PAGE; add " + match[2].str() + ", " +
-                   match[2].str() + ", " + match[3].str() + "@PAGEOFF" +
-                   match[4].str();
+            // Darwin's AArch64 assembler neither accepts the GNU/LLVM adrl
+            // pseudo-instruction nor keeps text after a ';' on a line, so the
+            // ADRP/ADD pair must be emitted as two physical lines.  The label
+            // (if any) stays on the first line only.
+            output << match[1].str() << match[2].str() << "adrp "
+                   << match[3].str() << ", " << match[4].str() << "@PAGE\n"
+                   << match[2].str() << "add " << match[3].str() << ", "
+                   << match[3].str() << ", " << match[4].str() << "@PAGEOFF"
+                   << match[5].str();
+            if (!input.eof()) output << '\n';
+            offset += 8;
+            continue;
         } else if (std::regex_match(line, match, branch_re)) {
             uint64_t target = 0;
             try {
@@ -441,15 +476,15 @@ static std::string normalize_absolute_branches(const std::string &source,
             std::string mnemonic = match[2].str();
             for (char &c : mnemonic)
                 c = (char)std::tolower((unsigned char)c);
-            if (target >= 0x100000000ULL && !address &&
-                (mnemonic == "b" || mnemonic == "bl")) {
+            if ((target >= 0x100000000ULL || is_absolute_va(target, va_range)) &&
+                !address && (mnemonic == "b" || mnemonic == "bl")) {
                 // Keep the target symbolic until the final plugin VA is known.
                 // Encoding the absolute VA as MOVZ/MOVK is not ASLR-safe.
                 std::ostringstream symbol;
                 symbol << "armcave_absolute_" << std::hex << target;
                 line = match[1].str() + match[2].str() + " " +
                        symbol.str() + match[4].str();
-            } else if (target >= 0x100000000ULL) {
+            } else if (target >= 0x100000000ULL || is_absolute_va(target, va_range)) {
                 int64_t pc = (int64_t)(address + offset);
                 int64_t target_signed = (int64_t)target;
                 int64_t relative = target_signed - pc;
@@ -463,11 +498,23 @@ static std::string normalize_absolute_branches(const std::string &source,
             } catch (...) {
                 target = 0;
             }
-            if (target >= 0x100000000ULL) {
-                uint64_t pc = address + offset;
-                int64_t relative = (int64_t)(target & ~0xfffULL) -
-                                    (int64_t)(pc & ~0xfffULL);
-                line = match[1].str() + std::to_string(relative) + match[3].str();
+            if (target >= 0x100000000ULL || is_absolute_va(target, va_range)) {
+                if (!address) {
+                    // new_asm_func bodies assemble at address zero because the
+                    // final plugin VA is unknown, so keep the page target
+                    // symbolic (like absolute branches) and let the PAGE21
+                    // relocation resolve it after layout.
+                    std::ostringstream symbol;
+                    symbol << "armcave_absolute_" << std::hex << target;
+                    line = match[1].str() + symbol.str() + "@PAGE" +
+                           match[3].str();
+                } else {
+                    uint64_t pc = address + offset;
+                    int64_t relative = (int64_t)(target & ~0xfffULL) -
+                                        (int64_t)(pc & ~0xfffULL);
+                    line = match[1].str() + std::to_string(relative) +
+                           match[3].str();
+                }
             }
         } else if (std::regex_match(line, match, compare_branch_re)) {
             uint64_t target = 0;
@@ -476,7 +523,7 @@ static std::string normalize_absolute_branches(const std::string &source,
             } catch (...) {
                 target = 0;
             }
-            if (target >= 0x100000000ULL) {
+            if (target >= 0x100000000ULL || is_absolute_va(target, va_range)) {
                 int64_t pc = (int64_t)(address + offset);
                 int64_t target_signed = (int64_t)target;
                 int64_t relative = target_signed - pc;
@@ -514,19 +561,19 @@ static std::string normalize_registered_labels(
         return source;
 
     static const std::regex branch_re(
-        R"(^([ \t]*(?:b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?(?:b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
         std::regex::icase);
     static const std::regex adrl_re(
-        R"(^([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?[ \t]*([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        R"(^((?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?[ \t]*([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
         std::regex::icase);
     static const std::regex adrp_re(
-        R"(^([ \t]*adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
         std::regex::icase);
     static const std::regex add_re(
-        R"(^([ \t]*add[ \t]+[xw][0-9]+[ \t]*,[ \t]*[xw][0-9]+[ \t]*,)[ \t]*#?[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
+        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?add[ \t]+[xw][0-9]+[ \t]*,[ \t]*[xw][0-9]+[ \t]*,)[ \t]*#?[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
         std::regex::icase);
     static const std::regex load_re(
-        R"(^([ \t]*(?:ldr|str)[ \t]+[xw][0-9]+[ \t]*,[ \t]*\[[ \t]*x[0-9]+[ \t]*,)[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)[ \t]*\](.*)$)",
+        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?(?:ldr|str)[ \t]+[xw][0-9]+[ \t]*,[ \t]*\[[ \t]*x[0-9]+[ \t]*,)[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)[ \t]*\](.*)$)",
         std::regex::icase);
     std::istringstream input(normalize_asm_text(source));
     std::ostringstream output;
@@ -538,12 +585,15 @@ static std::string normalize_registered_labels(
             if (target != label_targets.end())
                 line = match[1].str() + std::to_string(target->second) + match[3].str();
         } else if (std::regex_match(line, match, adrl_re)) {
-            auto target = label_targets.find(match[3].str());
+            auto target = label_targets.find(match[4].str());
             if (target != label_targets.end()) {
-                line = match[1].str() + "adrp " + match[2].str() + ", " +
-                       std::to_string(target->second) + "\n" + match[1].str() +
-                       "add " + match[2].str() + ", " + match[2].str() + ", #" +
-                       std::to_string(target->second & 0xfffU) + match[4].str();
+                // Keep the label only on the first emitted line; repeating it
+                // would define the same label twice in the assembly source.
+                line = match[1].str() + match[2].str() + "adrp " + match[3].str() +
+                       ", " + std::to_string(target->second) + "\n" +
+                       match[2].str() + "add " + match[3].str() + ", " +
+                       match[3].str() + ", #" +
+                       std::to_string(target->second & 0xfffU) + match[5].str();
             }
         } else if (std::regex_match(line, match, adrp_re)) {
             auto target = label_targets.find(match[2].str());
@@ -568,12 +618,14 @@ static std::string normalize_registered_labels(
 
 static MachO assemble_aarch64_object(
     const std::string &source, uint64_t address,
-    const std::map<std::string, uint64_t> &symbol_targets);
+    const std::map<std::string, uint64_t> &symbol_targets,
+    const AsmVaRange &va_range = {});
 
 std::vector<uint8_t> assemble_aarch64(
     const std::string &source, uint64_t address,
-    const std::map<std::string, uint64_t> &symbol_targets) {
-    auto mo = assemble_aarch64_object(source, address, symbol_targets);
+    const std::map<std::string, uint64_t> &symbol_targets,
+    const AsmVaRange &va_range) {
+    auto mo = assemble_aarch64_object(source, address, symbol_targets, va_range);
     auto *sec = mo.section("__text");
     if (!sec)
         throw std::runtime_error("AArch64 assembler object has no __text section");
@@ -587,7 +639,8 @@ std::vector<uint8_t> assemble_aarch64(
 
 static MachO assemble_aarch64_object(
     const std::string &source, uint64_t address,
-    const std::map<std::string, uint64_t> &symbol_targets) {
+    const std::map<std::string, uint64_t> &symbol_targets,
+    const AsmVaRange &va_range) {
     std::string td = tempdir("armcave-asm-");
     auto src = std::filesystem::path(td) / "a.s";
     auto out = std::filesystem::path(td) / "a.o";
@@ -596,7 +649,7 @@ static MachO assemble_aarch64_object(
         std::ofstream f(src);
         auto normalized = normalize_registered_labels(
             normalize_asm_text(source), address, symbol_targets);
-        f << ".text\n" << normalize_absolute_branches(normalized, address) << "\n";
+        f << ".text\n" << normalize_absolute_branches(normalized, address, va_range) << "\n";
     }
     std::string cmd = shell_quote(clang_driver(false)) +
                       " -target arm64-apple-macosx13.0 -c " + shell_quote(src.string()) +
@@ -744,7 +797,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         if (name == "__text" || name == "__compact_unwind" ||
             name == "__eh_frame" || name == "__armhook" || name == "__armkeep")
             continue;
-        if (name == "__caveasm" && target_is_elf)
+        if (name == "__caveasm")
             continue;
         if (name.size() >= 2 && name[0] == '_' && name[1] == '_') {
             if (sec.segment_name != "__TEXT")
@@ -782,7 +835,12 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         if (lines.empty())
             throw std::runtime_error("new_asm_func has an empty body in " + path.string());
         std::string source = split_asm_statements(lines);
-        auto asm_mo = assemble_aarch64_object(source, 0, {});
+        AsmVaRange va_range;
+        if (target_is_elf && target_binary) {
+            auto image = BinaryImage::parse(*target_binary);
+            if (image) va_range = AsmVaRange::of(*image);
+        }
+        auto asm_mo = assemble_aarch64_object(source, 0, {}, va_range);
         auto *asm_text = asm_mo.section("__text");
         auto bytes = asm_text->content(asm_mo.bin->data());
         while (blob.text.size() % 4 != 0) blob.text.push_back(0);
@@ -801,7 +859,8 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     for (auto &reloc : blob.relocs) {
         if (!reloc.from_new_asm_func || reloc.symbol_name.empty() ||
             (reloc.type != 0 && reloc.type != 3 && reloc.type != 4 &&
-             reloc.type != 5 && reloc.type != 6) || !reloc.symbol_section.empty())
+             reloc.type != 5 && reloc.type != 6 && reloc.type != 7) ||
+            !reloc.symbol_section.empty())
             continue;
 
         const BinarySymbol *data_symbol = nullptr;

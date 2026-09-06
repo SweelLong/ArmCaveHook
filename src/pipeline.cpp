@@ -281,9 +281,10 @@ static std::map<std::string, uint64_t> registered_function_targets(
 
 static std::vector<uint8_t> patch_payload(
     const HookAction &action,
-    const std::map<std::string, uint64_t> &function_targets = {}) {
+    const std::map<std::string, uint64_t> &function_targets = {},
+    const AsmVaRange &va_range = {}) {
     if (action.kind == "patch_asm") {
-        auto payload = assemble_aarch64(action.data, action.address, function_targets);
+        auto payload = assemble_aarch64(action.data, action.address, function_targets, va_range);
         if (action.size) {
             if (action.size % (int)payload.size() != 0)
                 throw std::runtime_error("patch_asm size must be a multiple of assembled payload size");
@@ -303,10 +304,11 @@ static std::vector<uint8_t> patch_payload(
 static bool matches_expected(const std::filesystem::path &output_path,
                              const HookAction &action,
                              const std::vector<uint8_t> &payload,
-                             const std::map<std::string, uint64_t> &function_targets = {}) {
+                             const std::map<std::string, uint64_t> &function_targets = {},
+                             const AsmVaRange &va_range = {}) {
     auto expected = action.kind == "patch_hex"
         ? parse_hex_payload(action.expected)
-        : assemble_aarch64(action.expected, action.address, function_targets);
+        : assemble_aarch64(action.expected, action.address, function_targets, va_range);
     if (expected.size() != payload.size())
         throw std::runtime_error("expected ASM must cover the same number of bytes as the patch");
     auto &binary = parse_binary(output_path);
@@ -597,6 +599,10 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
             cp.data_segment_file_offset = segment_file_offset(layout, cp.data_segment_name);
         }
     }
+    // parse_binary re-parses into its static cache on every call, which
+    // invalidates the layout reference; capture the VA range while it is
+    // still valid.
+    const AsmVaRange output_va_range = AsmVaRange::of(layout);
 
     auto place = [](std::vector<uint8_t> &target, int offset,
                     const std::vector<uint8_t> &source) {
@@ -653,8 +659,9 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                 targets[registered.function_name] = cp->segment_va +
                                                     (uint64_t)wrapper->second;
         }
-        auto payload = patch_payload(*action, targets);
-        if (action->has_expected && !matches_expected(output_path, *action, payload, targets))
+        auto payload = patch_payload(*action, targets, output_va_range);
+        if (action->has_expected && !matches_expected(output_path, *action, payload, targets,
+                                                      output_va_range))
             continue;
         patch_bytes_va(output_path, output_path, action->address, payload);
     }
