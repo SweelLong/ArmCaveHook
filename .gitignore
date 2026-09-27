@@ -14,8 +14,9 @@ CMakeUserPresets.json
 # macOS
 .DS_Store
 
-# IDA Pro
-.ida-mcp
+# Tools
+.ida-mcp/
+.workbuddy/
 
 # User
 *.patched
