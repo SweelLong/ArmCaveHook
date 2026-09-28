@@ -25,6 +25,7 @@
 - 地址常量优先声明为 `static constexpr uintptr_t`。但 `hook_*`、`patch_*` 和 `resolve_addr` 的参数会被框架预处理器字符串化，调用这些 API 时必须使用数值字面量，否则地址元数据无法解析。
 - 如果确实必须新增头文件或库依赖，应先确认没有可用的内部绑定方案，并说明新增依赖解决的具体问题、必要性以及对插件体积和兼容性的影响。
 - 只有在确认框架没有对应能力，并且用户明确要求或确有不可替代的必要性时，才讨论其他底层方案；不能默认回退到手写汇编。
+- android（ELF）插件不要用「值为 0 的 memset」清大块内存：插件实际以 `-target arm64-apple-macosx` 编译，clang 会把 `memset(p, 0, n)` 降级成 `bzero` libcall，而 ELF 不导出 `bzero`，流水线会报 `unresolved symbol: _bzero`。改用逐元素写清除标记，或按 apple 端写法绑定 `"_memset"`（带下划线，clang 不识别，框架解析时会自动剥下划线到 ELF 的 `memset`）。排查此类错误时先用 `nm -u` 看插件目标文件的未定义符号。
 
 ## 插件结构与命名约束
 
