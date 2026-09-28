@@ -41,3 +41,25 @@ Names are normalized to lowercase ASCII letters, digits, and underscores. When
 two plugins request the same code or data name, ArmCaveHook appends a stable
 short hash suffix. It reports an error if uniqueness still cannot be achieved.
 
+## Shared cave names
+
+ArmCaveHook does not open one segment per plugin. It packs every plugin code
+section of a patch run into a single R+X cave and every writable data section
+into a single R+W cave (see the segment layout section of the README). The cave
+name is derived from the **longest common prefix** of the plugin segment names:
+
+1. take the longest common prefix of all plugin segment names and strip the
+   platform prefix (`__` / `.`);
+2. append `_` if the remaining prefix does not end with one;
+3. append `code` / `data`.
+
+| Plugin segment names | Cave names |
+| --- | --- |
+| `__ncp_ap`, `__ncp_cp`, `__ncp_p64`, `__ncp_rs` | `__ncp_code` / `__ncp_data` |
+| a single plugin `__ncp_rs` | `__ncp_rs_code` / `__ncp_rs_data` |
+| nothing in common (e.g. `__ncp_rs` and `__zzzplay`) | falls back to `__armcave_code` / `__armcave_data` |
+
+The Mach-O segment name field is 16 bytes, so the logical prefix is capped at
+9 characters and truncated beyond that. An Android (ELF) `PT_LOAD` has no name
+field, so caves are split by the same rule but have no name to show.
+

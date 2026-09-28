@@ -54,6 +54,9 @@ uint64_t seg_va(BinaryImage &binary, const std::string &name, int size) {
         auto sname = seg_name(name, true);
         for (auto &segment : binary.segments())
             if (segment.name == sname) return segment.virtual_address;
+        // Sections packed into a shared cave have no segment of their own.
+        for (auto &section : binary.sections())
+            if (section.name == sname) return section.virtual_address;
         return last_end_va(binary.segments());
     }
     if (binary.is_elf()) {
@@ -77,21 +80,24 @@ void add_segments(const std::filesystem::path &binary_path,
     auto binary = BinaryImage::parse(binary_path);
     if (!binary)
         throw std::runtime_error("failed to parse " + binary_path.string());
-    // On ELF every plugin section is packed into the shared caves, so the
-    // number of added PT_LOAD entries stays constant instead of growing with
-    // the number of plugins.
-    std::vector<ElfSectionPlan> elf_plans;
+    // Plugin sections are packed into one code cave and one data cave, so the
+    // number of added containers stays constant instead of growing with the
+    // number of plugins.
+    std::vector<BinarySectionPlan> pending;
     for (const auto &plan : plans) {
         int size = plan.size;
         auto content = plan.content;
         content.resize(size, 0);
         auto name = seg_name(*binary, plan.name);
-        if (binary->is_elf() && !binary->section(name))
-            elf_plans.push_back({name, size, std::move(content), plan.writable});
-        else
+        if (binary->section(name))
             binary->add_executable_section(name, size, content, plan.writable);
+        else
+            pending.push_back({name, size, std::move(content), plan.writable});
     }
-    binary->add_elf_sections(elf_plans);
+    if (!pending.empty()) {
+        if (binary->is_macho()) binary->add_macho_sections(pending);
+        else binary->add_elf_sections(pending);
+    }
     binary->write(output_path);
 }
 
@@ -111,7 +117,8 @@ int segment_file_offset(BinaryImage &binary, const std::string &name) {
     if (binary.is_macho()) {
         auto sname = seg_name(name, true);
         for (auto &section : binary.sections())
-            if (section.segment_name == sname) return (int)section.offset;
+            if (section.name == sname || section.segment_name == sname)
+                return (int)section.offset;
         for (auto &segment : binary.segments())
             if (segment.name == sname) return (int)segment.file_offset;
         throw std::runtime_error("segment not found: " + name);

@@ -894,13 +894,26 @@ void BinaryImage::update_existing_section(BinarySection &item, int size,
 void BinaryImage::add_macho_section(const std::string &name, int size,
                                     const std::vector<uint8_t> &content,
                                     bool writable) {
+    add_macho_sections({BinarySectionPlan{name, size, content, writable}});
+}
+
+void BinaryImage::add_macho_sections(const std::vector<BinarySectionPlan> &plans) {
+    if (plans.empty()) return;
     constexpr uint32_t LC_SEGMENT_64 = 0x19;
     constexpr uint32_t LC_CODE_SIGNATURE = 0x1d;
-    constexpr size_t command_size = 72 + 80;
     const uint64_t page_size = read_le<uint32_t>(data_, 4) == 0x0100000c
         ? 0x4000 : 0x1000;
     uint32_t ncmds = read_le<uint32_t>(data_, 16);
     uint32_t sizeofcmds = read_le<uint32_t>(data_, 20);
+
+    size_t exec_count = 0;
+    size_t data_count = 0;
+    for (const auto &plan : plans) {
+        if (plan.size < 0 || plan.content.size() > (size_t)plan.size)
+            throw std::runtime_error("invalid executable section size");
+        if (plan.writable) ++data_count;
+        else ++exec_count;
+    }
 
     size_t load_offset = 32;
     for (uint32_t index = 0; index < ncmds; ++index) {
@@ -957,8 +970,39 @@ void BinaryImage::add_macho_section(const std::string &name, int size,
     uint64_t first_content = data_.size();
     for (const auto &item : sections_)
         if (item.offset != 0) first_content = std::min(first_content, item.offset);
+    const size_t exec_command_size = exec_count ? 72 + 80 * exec_count : 0;
+    const size_t data_command_size = data_count ? 72 + 80 * data_count : 0;
+    const size_t command_size = exec_command_size + data_command_size;
     if (commands_end + command_size > first_content)
         throw std::runtime_error("Mach-O header has no room for another segment command");
+
+    std::vector<uint64_t> offsets(plans.size());
+    uint64_t cursor = 0;
+    auto place_group = [&](bool writable) {
+        for (size_t i = 0; i < plans.size(); ++i) {
+            if (plans[i].writable != writable) continue;
+            cursor = align_up(cursor, 16);
+            offsets[i] = cursor;
+            cursor += (uint64_t)plans[i].size;
+        }
+    };
+    uint64_t exec_total = 0;
+    uint64_t data_base = 0;
+    uint64_t data_total = 0;
+    if (exec_count) {
+        place_group(false);
+        exec_total = cursor;
+        // Keep the two caves in separate pages: the loader maps every segment
+        // over page-rounded boundaries, so an overlapping tail page would
+        // remap the end of the code cave as read-write.
+        cursor = align_up(cursor, page_size);
+    }
+    if (data_count) {
+        data_base = cursor;
+        place_group(true);
+        data_total = cursor - data_base;
+    }
+    uint64_t insertion_size = align_up(cursor, page_size);
 
     uint64_t next_va = 0;
     uint64_t file_end = data_.size();
@@ -967,17 +1011,13 @@ void BinaryImage::add_macho_section(const std::string &name, int size,
         next_va = std::max(next_va, segment.virtual_address + segment.virtual_size);
         file_end = std::max(file_end, segment.file_offset + segment.file_size);
     }
-    uint64_t virtual_size = align_up((uint64_t)std::max(size, 1), page_size);
     for (auto &segment : segments_)
         if (segment.name == "__LINKEDIT") linkedit = &segment;
 
     uint64_t file_offset;
-    uint64_t segment_file_size;
     if (linkedit) {
         file_offset = linkedit->file_offset;
         next_va = linkedit->virtual_address;
-        segment_file_size = (uint64_t)size;
-        uint64_t insertion_size = virtual_size;
 
         auto adjust32 = [&](size_t offset) {
             uint32_t value = read_le<uint32_t>(data_, offset);
@@ -995,7 +1035,7 @@ void BinaryImage::add_macho_section(const std::string &name, int size,
                                        segment_offset + insertion_size);
                 if (fixed_name(data_, load_offset + 8, 16) == "__LINKEDIT")
                     write_le<uint64_t>(data_, load_offset + 24,
-                                       read_le<uint64_t>(data_, load_offset + 24) + virtual_size);
+                                       read_le<uint64_t>(data_, load_offset + 24) + insertion_size);
                 uint32_t section_count = read_le<uint32_t>(data_, load_offset + 64);
                 for (uint32_t section_index = 0; section_index < section_count; ++section_index) {
                     size_t section_offset = load_offset + 72 + (size_t)section_index * 80;
@@ -1025,53 +1065,118 @@ void BinaryImage::add_macho_section(const std::string &name, int size,
     } else {
         next_va = align_up(next_va, page_size);
         file_offset = align_up(file_end, page_size);
-        segment_file_size = (uint64_t)size;
-        if (data_.size() < file_offset + segment_file_size)
-            data_.resize((size_t)(file_offset + segment_file_size), 0);
+        if (data_.size() < file_offset + cursor)
+            data_.resize((size_t)(file_offset + cursor), 0);
     }
-    if (file_offset > std::numeric_limits<uint32_t>::max())
+    if (file_offset > std::numeric_limits<uint32_t>::max() ||
+        file_offset + cursor > std::numeric_limits<uint32_t>::max())
         throw std::runtime_error("Mach-O section offset is too large");
 
     memmove(data_.data() + command_offset + command_size,
             data_.data() + command_offset, commands_end - command_offset);
     std::fill(data_.begin() + command_offset,
               data_.begin() + command_offset + command_size, 0);
-    std::fill(data_.begin() + file_offset, data_.begin() + file_offset + size, 0);
-    std::copy(content.begin(), content.end(), data_.begin() + file_offset);
 
-    write_le<uint32_t>(data_, command_offset, LC_SEGMENT_64);
-    write_le<uint32_t>(data_, command_offset + 4, (uint32_t)command_size);
-    put_fixed_name(data_, command_offset + 8, 16, name);
-    write_le<uint64_t>(data_, command_offset + 24, next_va);
-    write_le<uint64_t>(data_, command_offset + 32, (uint64_t)size);
-    write_le<uint64_t>(data_, command_offset + 40, file_offset);
-    write_le<uint64_t>(data_, command_offset + 48, segment_file_size);
-    write_le<uint32_t>(data_, command_offset + 56, writable ? 3 : 5);
-    write_le<uint32_t>(data_, command_offset + 60, writable ? 3 : 5);
-    write_le<uint32_t>(data_, command_offset + 64, 1);
-    write_le<uint32_t>(data_, command_offset + 68, 0);
+    for (size_t i = 0; i < plans.size(); ++i) {
+        size_t offset = (size_t)(file_offset + offsets[i]);
+        std::fill(data_.begin() + offset, data_.begin() + offset + plans[i].size, 0);
+        std::copy(plans[i].content.begin(), plans[i].content.end(),
+                  data_.begin() + offset);
+    }
 
-    size_t section_offset = command_offset + 72;
-    put_fixed_name(data_, section_offset, 16, name);
-    put_fixed_name(data_, section_offset + 16, 16, name);
-    write_le<uint64_t>(data_, section_offset + 32, next_va);
-    write_le<uint64_t>(data_, section_offset + 40, (uint64_t)size);
-    write_le<uint32_t>(data_, section_offset + 48, (uint32_t)file_offset);
-    write_le<uint32_t>(data_, section_offset + 52, 2);
-    write_le<uint32_t>(data_, section_offset + 64, writable ? 0 : 0x80000400);
-    write_le<uint32_t>(data_, 16, ncmds + 1);
+    auto write_segment = [&](size_t at, const char *segment_name, bool writable,
+                             uint64_t va, uint64_t size, uint64_t offset,
+                             size_t section_count) {
+        write_le<uint32_t>(data_, at, LC_SEGMENT_64);
+        write_le<uint32_t>(data_, at + 4, (uint32_t)(72 + 80 * section_count));
+        put_fixed_name(data_, at + 8, 16, segment_name);
+        write_le<uint64_t>(data_, at + 24, va);
+        write_le<uint64_t>(data_, at + 32, size);
+        write_le<uint64_t>(data_, at + 40, offset);
+        write_le<uint64_t>(data_, at + 48, size);
+        write_le<uint32_t>(data_, at + 56, writable ? 3 : 5);
+        write_le<uint32_t>(data_, at + 60, writable ? 3 : 5);
+        write_le<uint32_t>(data_, at + 64, (uint32_t)section_count);
+        write_le<uint32_t>(data_, at + 68, 0);
+    };
+
+    // The shared caves are named after the longest prefix the plugin sections
+    // agree on, so "__ncp_ap" and "__ncp_cp" give "__ncp_code"/"__ncp_data".
+    // A single plugin falls back to its own name and unrelated names fall back
+    // to "armcave"; the base is capped so the segment name still fits the
+    // 16-byte Mach-O field once "code"/"data" is appended.
+    std::string cave_base = plans.front().name;
+    for (const auto &plan : plans) {
+        size_t shared = 0;
+        while (shared < cave_base.size() && shared < plan.name.size() &&
+               cave_base[shared] == plan.name[shared])
+            ++shared;
+        cave_base.resize(shared);
+    }
+    // Keep only the logical part, fall back to "armcave" when the plugins
+    // share no prefix beyond the platform one, and cap the base so the
+    // segment name still fits the 16-byte Mach-O field once "code"/"data"
+    // is appended.
+    std::string logical = cave_base.substr(0, 2) == "__" ? cave_base.substr(2) : cave_base;
+    if (logical.empty()) logical = "armcave";
+    if (logical.size() > 9) logical.resize(9);
+    if (logical.back() != '_') logical.push_back('_');
+    const std::string code_name = "__" + logical + "code";
+    const std::string data_name = "__" + logical + "data";
+
+    size_t at = command_offset;
+    if (exec_count) {
+        write_segment(at, code_name.c_str(), false, next_va, exec_total,
+                      file_offset, exec_count);
+        size_t section_offset = at + 72;
+        for (size_t i = 0; i < plans.size(); ++i) {
+            if (plans[i].writable) continue;
+            put_fixed_name(data_, section_offset, 16, plans[i].name);
+            put_fixed_name(data_, section_offset + 16, 16, code_name);
+            write_le<uint64_t>(data_, section_offset + 32, next_va + offsets[i]);
+            write_le<uint64_t>(data_, section_offset + 40, (uint64_t)plans[i].size);
+            write_le<uint32_t>(data_, section_offset + 48,
+                               (uint32_t)(file_offset + offsets[i]));
+            write_le<uint32_t>(data_, section_offset + 52, 2);
+            write_le<uint32_t>(data_, section_offset + 64, 0x80000400);
+            section_offset += 80;
+        }
+        at += exec_command_size;
+    }
+    if (data_count) {
+        write_segment(at, data_name.c_str(), true, next_va + data_base, data_total,
+                      file_offset + data_base, data_count);
+        size_t section_offset = at + 72;
+        for (size_t i = 0; i < plans.size(); ++i) {
+            if (!plans[i].writable) continue;
+            put_fixed_name(data_, section_offset, 16, plans[i].name);
+            put_fixed_name(data_, section_offset + 16, 16, data_name);
+            write_le<uint64_t>(data_, section_offset + 32, next_va + offsets[i]);
+            write_le<uint64_t>(data_, section_offset + 40, (uint64_t)plans[i].size);
+            write_le<uint32_t>(data_, section_offset + 48,
+                               (uint32_t)(file_offset + offsets[i]));
+            write_le<uint32_t>(data_, section_offset + 52, 2);
+            write_le<uint32_t>(data_, section_offset + 64, 0);
+            section_offset += 80;
+        }
+    }
+
+    write_le<uint32_t>(data_, 16,
+                       ncmds + (uint32_t)(exec_count ? 1 : 0) + (uint32_t)(data_count ? 1 : 0));
     write_le<uint32_t>(data_, 20, sizeofcmds + (uint32_t)command_size);
-    update_macho_chained_fixups(inserted_segment_index);
+    uint32_t fixup_segment = inserted_segment_index;
+    if (exec_count) update_macho_chained_fixups(fixup_segment++);
+    if (data_count) update_macho_chained_fixups(fixup_segment);
     if (!parse_macho()) throw std::runtime_error("failed to reparse modified Mach-O");
 }
 
 void BinaryImage::add_elf_section(const std::string &name, int size,
                                   const std::vector<uint8_t> &content,
                                   bool writable) {
-    add_elf_sections({ElfSectionPlan{name, size, content, writable}});
+    add_elf_sections({BinarySectionPlan{name, size, content, writable}});
 }
 
-void BinaryImage::add_elf_sections(const std::vector<ElfSectionPlan> &plans) {
+void BinaryImage::add_elf_sections(const std::vector<BinarySectionPlan> &plans) {
     if (plans.empty()) return;
 
     uint64_t old_phoff = read_le<uint64_t>(data_, 32);

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 400" width="680" height="400" role="img">
+<title>Apple (Mach-O) patch 新增的段</title>
+<desc>修复前每个插件的代码段和数据段各自新增一个 LC_SEGMENT_64，共新增 8 个；修复后所有代码段打包进一个 R+X 段 __ncp_code、所有数据段打包进一个 R+W 段 __ncp_data，只新增 2 个。</desc>
+<style>
+  .t{fill:#2C2C2A}.h1{fill:#791F1F}.h2{fill:#173404}.c1{fill:#791F1F}.c2{fill:#3B6D11}
+  @media (prefers-color-scheme:dark){
+    .t{fill:#D3D1C7}.h1{fill:#F09595}.h2{fill:#97C459}.c1{fill:#F09595}.c2{fill:#97C459}
+  }
+</style>
+
+<text class="t" x="40" y="26" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="15" font-weight="500">Apple (Mach-O) patch 新增的段</text>
+
+<text class="h1" x="40" y="52" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="13" font-weight="500">修复前：每个插件各自一个段</text>
+<rect x="40" y="64" width="290" height="240" rx="12" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5"/>
+<rect x="52" y="76" width="266" height="20" rx="5" fill="#F7C1C1" stroke="#F09595" stroke-width="0.5"/>
+<text x="62" y="86" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#791F1F" dominant-baseline="central">__ncp_ap　R+X</text>
+<rect x="52" y="104" width="266" height="20" rx="5" fill="#F7C1C1" stroke="#F09595" stroke-width="0.5"/>
+<text x="62" y="114" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#791F1F" dominant-baseline="central">__ncp_ap_data　R+W</text>
+<rect x="52" y="132" width="266" height="20" rx="5" fill="#F7C1C1" stroke="#F09595" stroke-width="0.5"/>
+<text x="62" y="142" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#791F1F" dominant-baseline="central">__ncp_cp　R+X</text>
+<rect x="52" y="160" width="266" height="20" rx="5" fill="#F7C1C1" stroke="#F09595" stroke-width="0.5"/>
+<text x="62" y="170" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#791F1F" dominant-baseline="central">__ncp_cp_data　R+W</text>
+<rect x="52" y="188" width="266" height="20" rx="5" fill="#F7C1C1" stroke="#F09595" stroke-width="0.5"/>
+<text x="62" y="198" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#791F1F" dominant-baseline="central">__ncp_p64　R+X</text>
+<rect x="52" y="216" width="266" height="20" rx="5" fill="#F7C1C1" stroke="#F09595" stroke-width="0.5"/>
+<text x="62" y="226" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#791F1F" dominant-baseline="central">__ncp_p64_data　R+W</text>
+<rect x="52" y="244" width="266" height="20" rx="5" fill="#F7C1C1" stroke="#F09595" stroke-width="0.5"/>
+<text x="62" y="254" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#791F1F" dominant-baseline="central">__ncp_rs　R+X</text>
+<rect x="52" y="272" width="266" height="20" rx="5" fill="#F7C1C1" stroke="#F09595" stroke-width="0.5"/>
+<text x="62" y="282" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#791F1F" dominant-baseline="central">__ncp_rs_data　R+W</text>
+
+<text class="h2" x="350" y="52" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="13" font-weight="500">修复后：代码与数据各汇总进一个段</text>
+<rect x="350" y="64" width="290" height="136" rx="12" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+<text x="364" y="82" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="13" font-weight="500" fill="#173404" dominant-baseline="central">__ncp_code　R+X　0x1016a4000</text>
+<rect x="362" y="94" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="104" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_ap</text>
+<rect x="362" y="118" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="128" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_cp</text>
+<rect x="362" y="142" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="152" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_p64</text>
+<rect x="362" y="166" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="176" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_rs</text>
+
+<text x="364" y="214" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="11" fill="#3B6D11" dominant-baseline="central">页对齐间隔：避免 dyld 按页取整时覆盖代码尾部</text>
+
+<rect x="350" y="224" width="290" height="136" rx="12" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+<text x="364" y="242" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="13" font-weight="500" fill="#173404" dominant-baseline="central">__ncp_data　R+W　0x1016a8000</text>
+<rect x="362" y="254" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="264" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_ap_data</text>
+<rect x="362" y="278" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="288" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_cp_data</text>
+<rect x="362" y="302" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="312" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_p64_data</text>
+<rect x="362" y="326" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="336" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_rs_data</text>
+
+<text class="c1" x="40" y="380" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" dominant-baseline="central">段 4 → 12，文件 24,542,416 字节</text>
+<text class="c2" x="350" y="380" font-family="system-ui,-apple-system,PingFang SC,sans-serif" font-size="12" dominant-baseline="central">段 4 → 6，文件 24,443,920 字节</text>
+</svg>

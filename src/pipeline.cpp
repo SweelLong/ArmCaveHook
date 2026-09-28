@@ -153,6 +153,8 @@ static bool has_plugin_segment(BinaryImage &binary, const std::string &name) {
     if (binary.is_macho()) {
         for (const auto &segment : binary.segments())
             if (segment.name == target) return true;
+        for (const auto &section : binary.sections())
+            if (section.name == target) return true;
         return false;
     }
     return binary.section(target) != nullptr;

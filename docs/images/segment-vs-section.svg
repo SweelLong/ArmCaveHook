@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 366" width="680" height="366" role="img">
+<title>Segments and sections: container and contents</title>
+<desc>On Mach-O the segment.section name is the hierarchy: the __TEXT segment holds the __text and __cstring sections. On ELF .text and .rodata are peers at section level and are only packed by the linker into one R+X PT_LOAD. ArmCaveHook caves follow the same model.</desc>
+<style>
+  .t{fill:#2C2C2A}.c{fill:#444441}
+  @media (prefers-color-scheme:dark){ .t{fill:#D3D1C7}.c{fill:#B4B2A9} }
+</style>
+
+<text class="t" x="40" y="26" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="15" font-weight="500">Segments and sections: container and contents</text>
+
+<text class="t" x="40" y="52" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="13" font-weight="500">Mach-O (Apple)</text>
+<rect x="40" y="64" width="290" height="90" rx="12" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="54" y="84" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" font-weight="500" fill="#2C2C2A" dominant-baseline="central">__TEXT (segment, R+X)</text>
+<rect x="52" y="94" width="266" height="20" rx="5" fill="#D3D1C7" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="62" y="104" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#2C2C2A" dominant-baseline="central">__text</text>
+<rect x="52" y="118" width="266" height="20" rx="5" fill="#D3D1C7" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="62" y="128" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#2C2C2A" dominant-baseline="central">__cstring</text>
+
+<rect x="40" y="170" width="290" height="138" rx="12" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+<text x="54" y="190" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" font-weight="500" fill="#173404" dominant-baseline="central">__ncp_code (segment, R+X, added)</text>
+<rect x="52" y="202" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="62" y="212" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_ap</text>
+<rect x="52" y="226" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="62" y="236" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_cp</text>
+<rect x="52" y="250" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="62" y="260" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_p64</text>
+<rect x="52" y="274" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="62" y="284" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">__ncp_rs</text>
+
+<text class="c" x="40" y="328" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="11" dominant-baseline="central">segment.section is the hierarchy: __TEXT.__cstring</text>
+<text class="c" x="40" y="346" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="11" dominant-baseline="central">plugin sections hang under the cave segment</text>
+
+<text class="t" x="350" y="52" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="13" font-weight="500">ELF (Android)</text>
+<rect x="350" y="64" width="290" height="90" rx="12" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="364" y="84" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" font-weight="500" fill="#2C2C2A" dominant-baseline="central">PT_LOAD #1 (segment, R+X)</text>
+<rect x="362" y="94" width="266" height="20" rx="5" fill="#D3D1C7" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="372" y="104" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#2C2C2A" dominant-baseline="central">.text</text>
+<rect x="362" y="118" width="266" height="20" rx="5" fill="#D3D1C7" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="372" y="128" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#2C2C2A" dominant-baseline="central">.rodata</text>
+
+<rect x="350" y="170" width="290" height="138" rx="12" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+<text x="364" y="190" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" font-weight="500" fill="#173404" dominant-baseline="central">PT_LOAD (segment, R+X, added)</text>
+<rect x="362" y="202" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="212" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">.ncp_ap</text>
+<rect x="362" y="226" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="236" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">.ncp_cp</text>
+<rect x="362" y="250" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="260" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">.ncp_p64</text>
+<rect x="362" y="274" width="266" height="20" rx="5" fill="#C0DD97" stroke="#97C459" stroke-width="0.5"/>
+<text x="372" y="284" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12" fill="#173404" dominant-baseline="central">.ncp_rs</text>
+
+<text class="c" x="350" y="328" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="11" dominant-baseline="central">.text and .rodata are peers at section level</text>
+<text class="c" x="350" y="346" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="11" dominant-baseline="central">the linker packs them into one PT_LOAD by permission</text>
+</svg>
