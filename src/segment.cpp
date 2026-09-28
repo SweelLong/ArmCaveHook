@@ -77,13 +77,21 @@ void add_segments(const std::filesystem::path &binary_path,
     auto binary = BinaryImage::parse(binary_path);
     if (!binary)
         throw std::runtime_error("failed to parse " + binary_path.string());
+    // On ELF every plugin section is packed into the shared caves, so the
+    // number of added PT_LOAD entries stays constant instead of growing with
+    // the number of plugins.
+    std::vector<ElfSectionPlan> elf_plans;
     for (const auto &plan : plans) {
         int size = plan.size;
         auto content = plan.content;
         content.resize(size, 0);
-        binary->add_executable_section(seg_name(*binary, plan.name), size,
-                                       content, plan.writable);
+        auto name = seg_name(*binary, plan.name);
+        if (binary->is_elf() && !binary->section(name))
+            elf_plans.push_back({name, size, std::move(content), plan.writable});
+        else
+            binary->add_executable_section(name, size, content, plan.writable);
     }
+    binary->add_elf_sections(elf_plans);
     binary->write(output_path);
 }
 

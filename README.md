@@ -47,6 +47,25 @@ Planned work includes code-signing workflow guidance, byte-signature stability
 guidance, optional cross-version address assistance, a lightweight C++ plugin
 toolkit, and broader Android ELF coverage for DT_RELR and `eh_frame`.
 
+## Android ELF layout
+
+On Android (ELF) a single patch run adds exactly two `PT_LOAD` segments: every
+plugin code section is packed into one R+X cave and every writable data section
+into one R+W cave. The cave count does not grow with the plugin count.
+
+<p align="center">
+  <img src="docs/images/elf-load-layout.svg" alt="PT_LOAD segments added by an Android (ELF) patch" width="680">
+</p>
+
+The two caves are separated by a page-aligned gap. The loader maps every
+`PT_LOAD` over page-rounded boundaries, so if both caves shared a page the data
+mapping would remap the tail page of the code cave as R+W and that code would no
+longer be executable.
+
+The numbers above come from patching `libcocos2dcpp.so` with four plugins:
+before the fix LOAD 3 → 11 (29,445,600 bytes), after the fix LOAD 3 → 5
+(29,347,968 bytes).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)

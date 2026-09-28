@@ -81,6 +81,16 @@ private:
     friend class BinaryImage;
 };
 
+// ELF plugin sections are appended in one batch so that a patch run adds at
+// most two PT_LOAD entries (one R+X code cave and one R+W data cave) instead
+// of one PT_LOAD per plugin section.
+struct ElfSectionPlan {
+    std::string name;
+    int size = 0;
+    std::vector<uint8_t> content;
+    bool writable = false;
+};
+
 class BinaryImage {
 public:
     static std::unique_ptr<BinaryImage> parse(const std::filesystem::path &path);
@@ -115,6 +125,7 @@ public:
     void add_executable_section(const std::string &name, int size,
                                 const std::vector<uint8_t> &content,
                                 bool writable = false);
+    void add_elf_sections(const std::vector<ElfSectionPlan> &plans);
     void write(const std::filesystem::path &path) const;
 
 private:

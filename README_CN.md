@@ -44,6 +44,21 @@ extern "C" void init(void) {
 后续计划包括代码签名流程说明、字节签名稳定性指导、可选的跨版本地址辅助工具、轻量 C++ 插件
 工具集，以及对 Android ELF 的 DT_RELR 和 `eh_frame` 等支持扩展。
 
+## Android ELF 段布局
+
+Android（ELF）目标下，一次 patch 只会新增两个 `PT_LOAD`：所有插件代码段打包进一个 R+X 洞穴，
+所有可写数据段打包进一个 R+W 洞穴。洞穴数量与插件数量无关，不会每多一个插件就多一个 LOAD。
+
+<p align="center">
+  <img src="docs/images/elf-load-layout_CN.svg" alt="Android (ELF) patch 新增的 PT_LOAD 段" width="680">
+</p>
+
+两个洞穴之间按页对齐。loader 会按页取整映射每个 `PT_LOAD`，如果两个洞穴落在同一页，数据段的
+映射会把代码洞穴的尾页重新映射成 R+W，那段代码将无法执行。
+
+上图的数字来自 `libcocos2dcpp.so` 打 4 个插件的实测结果：修复前 LOAD 3 → 11（文件 29,445,600
+字节），修复后 LOAD 3 → 5（文件 29,347,968 字节）。
+
 ## 文档
 
 - [架构](docs/architecture_CN.md)

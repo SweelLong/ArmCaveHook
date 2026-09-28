@@ -1068,6 +1068,12 @@ void BinaryImage::add_macho_section(const std::string &name, int size,
 void BinaryImage::add_elf_section(const std::string &name, int size,
                                   const std::vector<uint8_t> &content,
                                   bool writable) {
+    add_elf_sections({ElfSectionPlan{name, size, content, writable}});
+}
+
+void BinaryImage::add_elf_sections(const std::vector<ElfSectionPlan> &plans) {
+    if (plans.empty()) return;
+
     uint64_t old_phoff = read_le<uint64_t>(data_, 32);
     uint64_t old_shoff = read_le<uint64_t>(data_, 40);
     uint16_t phentsize = read_le<uint16_t>(data_, 54);
@@ -1078,11 +1084,19 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
     if (phentsize < 56 || old_phoff > data_.size() ||
         (uint64_t)phnum * phentsize > data_.size() - old_phoff)
         throw std::runtime_error("ELF lacks a writable program table");
-    if (phnum == std::numeric_limits<uint16_t>::max())
+
+    bool has_exec = false;
+    bool has_data = false;
+    for (const auto &plan : plans) {
+        if (plan.size < 0 || plan.content.size() > (size_t)plan.size)
+            throw std::runtime_error("invalid executable section size");
+        if (plan.writable) has_data = true;
+        else has_exec = true;
+    }
+    const uint16_t new_loads = (uint16_t)((has_exec ? 1 : 0) + (has_data ? 1 : 0));
+    if ((uint64_t)phnum + new_loads > std::numeric_limits<uint16_t>::max())
         throw std::runtime_error("ELF table is full");
 
-    const uint32_t p_flags = writable ? 6 : 5;
-    const uint64_t sh_flags = writable ? 0x3 : 0x6;
     uint64_t page_size = 0x1000;
     uint64_t next_va = 0;
     for (const auto &segment : segments_) {
@@ -1091,105 +1105,96 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
             page_size = segment.alignment;
     }
     next_va = align_up(next_va, page_size);
-    uint64_t load_offset = align_up(data_.size(), page_size);
-    uint64_t ph_table_size = (uint64_t)(phnum + 1) * phentsize;
-    uint64_t content_offset = load_offset + align_up(ph_table_size, 16);
-    uint64_t content_va = next_va + (content_offset - load_offset);
+    uint64_t region_start = align_up(data_.size(), page_size);
+    uint64_t ph_table_size = ((uint64_t)phnum + new_loads) * phentsize;
+    uint64_t cursor = region_start + align_up(ph_table_size, 16);
 
+    std::vector<uint64_t> offsets(plans.size());
+    std::vector<uint64_t> vas(plans.size());
+    auto place_group = [&](bool writable) {
+        cursor = align_up(cursor, 16);
+        for (size_t i = 0; i < plans.size(); ++i) {
+            if (plans[i].writable != writable) continue;
+            offsets[i] = cursor;
+            vas[i] = next_va + (cursor - region_start);
+            cursor += align_up((uint64_t)plans[i].size, 16);
+        }
+    };
+    uint64_t exec_end = cursor;
+    uint64_t data_start = cursor;
+    uint64_t data_end = cursor;
+    if (has_exec) {
+        place_group(false);
+        exec_end = cursor;
+        // Keep the two caves in separate pages: the loader maps every PT_LOAD
+        // over page-rounded boundaries, so an overlapping tail page would
+        // remap the end of the code cave as read-write.
+        if (has_data) cursor = align_up(cursor, page_size);
+    }
+    if (has_data) {
+        data_start = cursor;
+        place_group(true);
+        data_end = cursor;
+    }
+
+    std::vector<uint8_t> names;
+    std::vector<uint32_t> name_offsets(plans.size());
+    uint32_t shstr_name_offset = 1;
+    uint16_t new_shnum = 0;
+    uint64_t shdr_size = 0;
     const bool has_sections = shnum != 0 && shentsize >= 64 && shstrndx < shnum &&
         old_shoff <= data_.size() && (uint64_t)shnum * shentsize <= data_.size() - old_shoff;
     if (!has_sections) {
-        std::vector<uint8_t> names(1, 0);
-        uint32_t name_offset = (uint32_t)names.size();
-        names.insert(names.end(), name.begin(), name.end());
         names.push_back(0);
-        uint32_t shstr_name_offset = (uint32_t)names.size();
+        for (size_t i = 0; i < plans.size(); ++i) {
+            name_offsets[i] = (uint32_t)names.size();
+            names.insert(names.end(), plans[i].name.begin(), plans[i].name.end());
+            names.push_back(0);
+        }
+        shstr_name_offset = (uint32_t)names.size();
         const char shstr_name[] = ".shstrtab";
         names.insert(names.end(), shstr_name, shstr_name + sizeof(shstr_name));
-        uint64_t names_offset = content_offset + size;
-        uint64_t section_table_offset = align_up(names_offset + names.size(), 8);
-        uint64_t end_offset = section_table_offset + 3 * 64;
-        uint64_t load_size = names_offset - load_offset;
-        std::vector<uint8_t> old_phdrs(data_.begin() + old_phoff,
-                                       data_.begin() + old_phoff + (uint64_t)phnum * phentsize);
-        data_.resize((size_t)end_offset, 0);
-        std::copy(old_phdrs.begin(), old_phdrs.end(), data_.begin() + load_offset);
-        for (uint16_t i = 0; i < phnum; ++i) {
-            size_t offset = load_offset + (size_t)i * phentsize;
-            if (read_le<uint32_t>(data_, offset) == 6) {
-                write_le<uint64_t>(data_, offset + 8, load_offset);
-                write_le<uint64_t>(data_, offset + 16, next_va);
-                write_le<uint64_t>(data_, offset + 24, next_va);
-                write_le<uint64_t>(data_, offset + 32, ph_table_size);
-                write_le<uint64_t>(data_, offset + 40, ph_table_size);
-                write_le<uint64_t>(data_, offset + 48, 8);
-            }
+        shentsize = 64;
+        new_shnum = (uint16_t)(2 + plans.size());
+        shstrndx = (uint16_t)(1 + plans.size());
+        shdr_size = (uint64_t)new_shnum * shentsize;
+    } else {
+        if ((uint64_t)shnum + plans.size() > std::numeric_limits<uint16_t>::max())
+            throw std::runtime_error("ELF section table is full");
+        size_t old_names_header = old_shoff + (size_t)shstrndx * shentsize;
+        uint64_t old_names_offset = read_le<uint64_t>(data_, old_names_header + 24);
+        uint64_t old_names_size = read_le<uint64_t>(data_, old_names_header + 32);
+        if (old_names_offset > data_.size() || old_names_size > data_.size() - old_names_offset)
+            throw std::runtime_error("invalid ELF section name table");
+        names.assign(data_.begin() + (size_t)old_names_offset,
+                     data_.begin() + (size_t)(old_names_offset + old_names_size));
+        if (names.empty()) names.push_back(0);
+        for (size_t i = 0; i < plans.size(); ++i) {
+            name_offsets[i] = (uint32_t)names.size();
+            names.insert(names.end(), plans[i].name.begin(), plans[i].name.end());
+            names.push_back(0);
         }
-        size_t new_phdr = load_offset + (size_t)phnum * phentsize;
-        write_le<uint32_t>(data_, new_phdr, 1);
-        write_le<uint32_t>(data_, new_phdr + 4, p_flags);
-        write_le<uint64_t>(data_, new_phdr + 8, load_offset);
-        write_le<uint64_t>(data_, new_phdr + 16, next_va);
-        write_le<uint64_t>(data_, new_phdr + 24, next_va);
-        write_le<uint64_t>(data_, new_phdr + 32, load_size);
-        write_le<uint64_t>(data_, new_phdr + 40, load_size);
-        write_le<uint64_t>(data_, new_phdr + 48, page_size);
-        std::copy(content.begin(), content.end(), data_.begin() + content_offset);
-        std::copy(names.begin(), names.end(), data_.begin() + names_offset);
-        size_t content_shdr = section_table_offset + 64;
-        write_le<uint32_t>(data_, content_shdr, name_offset);
-        write_le<uint32_t>(data_, content_shdr + 4, 1);
-        write_le<uint64_t>(data_, content_shdr + 8, sh_flags);
-        write_le<uint64_t>(data_, content_shdr + 16, content_va);
-        write_le<uint64_t>(data_, content_shdr + 24, content_offset);
-        write_le<uint64_t>(data_, content_shdr + 32, (uint64_t)size);
-        write_le<uint64_t>(data_, content_shdr + 48, 16);
-        size_t names_shdr = section_table_offset + 128;
-        write_le<uint32_t>(data_, names_shdr, shstr_name_offset);
-        write_le<uint32_t>(data_, names_shdr + 4, 3);
-        write_le<uint64_t>(data_, names_shdr + 24, names_offset);
-        write_le<uint64_t>(data_, names_shdr + 32, (uint64_t)names.size());
-        write_le<uint64_t>(data_, names_shdr + 48, 1);
-        write_le<uint64_t>(data_, 32, load_offset);
-        write_le<uint64_t>(data_, 40, section_table_offset);
-        write_le<uint16_t>(data_, 56, phnum + 1);
-        write_le<uint16_t>(data_, 58, 64);
-        write_le<uint16_t>(data_, 60, 3);
-        write_le<uint16_t>(data_, 62, 2);
-        if (!parse_elf()) throw std::runtime_error("failed to reparse modified ELF");
-        return;
+        new_shnum = (uint16_t)(shnum + plans.size());
+        shdr_size = (uint64_t)new_shnum * shentsize;
     }
-    if (shnum == std::numeric_limits<uint16_t>::max())
-        throw std::runtime_error("ELF section table is full");
 
-    size_t old_names_header = old_shoff + (size_t)shstrndx * shentsize;
-    uint64_t old_names_offset = read_le<uint64_t>(data_, old_names_header + 24);
-    uint64_t old_names_size = read_le<uint64_t>(data_, old_names_header + 32);
-    if (old_names_offset > data_.size() || old_names_size > data_.size() - old_names_offset)
-        throw std::runtime_error("invalid ELF section name table");
-    std::vector<uint8_t> names(data_.begin() + old_names_offset,
-                               data_.begin() + old_names_offset + old_names_size);
-    if (names.empty()) names.push_back(0);
-    uint32_t name_offset = (uint32_t)names.size();
-    names.insert(names.end(), name.begin(), name.end());
-    names.push_back(0);
-
-    uint64_t names_offset = content_offset + size;
+    uint64_t names_offset = cursor;
     uint64_t section_table_offset = align_up(names_offset + names.size(), 8);
-    uint64_t end_offset = section_table_offset + (uint64_t)(shnum + 1) * shentsize;
-    uint64_t load_size = names_offset - load_offset;
+    uint64_t end_offset = section_table_offset + shdr_size;
 
     std::vector<uint8_t> old_phdrs(data_.begin() + old_phoff,
                                    data_.begin() + old_phoff + (uint64_t)phnum * phentsize);
-    std::vector<uint8_t> old_shdrs(data_.begin() + old_shoff,
-                                   data_.begin() + old_shoff + (uint64_t)shnum * shentsize);
+    std::vector<uint8_t> old_shdrs;
+    if (has_sections)
+        old_shdrs.assign(data_.begin() + old_shoff,
+                         data_.begin() + old_shoff + (uint64_t)shnum * shentsize);
     data_.resize((size_t)end_offset, 0);
-    std::copy(old_phdrs.begin(), old_phdrs.end(), data_.begin() + load_offset);
+    std::copy(old_phdrs.begin(), old_phdrs.end(), data_.begin() + region_start);
 
     for (uint16_t i = 0; i < phnum; ++i) {
-        size_t offset = load_offset + (size_t)i * phentsize;
+        size_t offset = region_start + (size_t)i * phentsize;
         if (read_le<uint32_t>(data_, offset) == 6) {
-            write_le<uint64_t>(data_, offset + 8, load_offset);
+            write_le<uint64_t>(data_, offset + 8, region_start);
             write_le<uint64_t>(data_, offset + 16, next_va);
             write_le<uint64_t>(data_, offset + 24, next_va);
             write_le<uint64_t>(data_, offset + 32, ph_table_size);
@@ -1197,37 +1202,68 @@ void BinaryImage::add_elf_section(const std::string &name, int size,
             write_le<uint64_t>(data_, offset + 48, 8);
         }
     }
-    size_t new_phdr = load_offset + (size_t)phnum * phentsize;
-    write_le<uint32_t>(data_, new_phdr, 1);
-    write_le<uint32_t>(data_, new_phdr + 4, p_flags);
-    write_le<uint64_t>(data_, new_phdr + 8, load_offset);
-    write_le<uint64_t>(data_, new_phdr + 16, next_va);
-    write_le<uint64_t>(data_, new_phdr + 24, next_va);
-    write_le<uint64_t>(data_, new_phdr + 32, load_size);
-    write_le<uint64_t>(data_, new_phdr + 40, load_size);
-    write_le<uint64_t>(data_, new_phdr + 48, page_size);
 
-    std::fill(data_.begin() + content_offset, data_.begin() + content_offset + size, 0);
-    std::copy(content.begin(), content.end(), data_.begin() + content_offset);
-    std::copy(names.begin(), names.end(), data_.begin() + names_offset);
-    std::copy(old_shdrs.begin(), old_shdrs.end(), data_.begin() + section_table_offset);
+    uint16_t next_phdr = phnum;
+    auto write_load = [&](uint64_t file_offset, uint64_t va, uint64_t size, uint32_t flags) {
+        size_t phdr = region_start + (size_t)next_phdr * phentsize;
+        ++next_phdr;
+        write_le<uint32_t>(data_, phdr, 1);
+        write_le<uint32_t>(data_, phdr + 4, flags);
+        write_le<uint64_t>(data_, phdr + 8, file_offset);
+        write_le<uint64_t>(data_, phdr + 16, va);
+        write_le<uint64_t>(data_, phdr + 24, va);
+        write_le<uint64_t>(data_, phdr + 32, size);
+        write_le<uint64_t>(data_, phdr + 40, size);
+        write_le<uint64_t>(data_, phdr + 48, page_size);
+    };
+    if (has_exec)
+        write_load(region_start, next_va, exec_end - region_start, 5);
+    if (has_data)
+        write_load(data_start, next_va + (data_start - region_start),
+                   data_end - data_start, 6);
 
-    size_t names_header = section_table_offset + (size_t)shstrndx * shentsize;
-    write_le<uint64_t>(data_, names_header + 24, names_offset);
-    write_le<uint64_t>(data_, names_header + 32, (uint64_t)names.size());
-    size_t new_section = section_table_offset + (size_t)shnum * shentsize;
-    write_le<uint32_t>(data_, new_section, name_offset);
-    write_le<uint32_t>(data_, new_section + 4, 1);
-    write_le<uint64_t>(data_, new_section + 8, sh_flags);
-    write_le<uint64_t>(data_, new_section + 16, content_va);
-    write_le<uint64_t>(data_, new_section + 24, content_offset);
-    write_le<uint64_t>(data_, new_section + 32, (uint64_t)size);
-    write_le<uint64_t>(data_, new_section + 48, 16);
+    for (size_t i = 0; i < plans.size(); ++i) {
+        size_t offset = (size_t)offsets[i];
+        std::fill(data_.begin() + offset, data_.begin() + offset + plans[i].size, 0);
+        std::copy(plans[i].content.begin(), plans[i].content.end(),
+                  data_.begin() + offset);
+    }
+    std::copy(names.begin(), names.end(), data_.begin() + (size_t)names_offset);
+    if (has_sections)
+        std::copy(old_shdrs.begin(), old_shdrs.end(),
+                  data_.begin() + (size_t)section_table_offset);
 
-    write_le<uint64_t>(data_, 32, load_offset);
+    if (has_sections) {
+        size_t names_header = section_table_offset + (size_t)shstrndx * shentsize;
+        write_le<uint64_t>(data_, names_header + 24, names_offset);
+        write_le<uint64_t>(data_, names_header + 32, names.size());
+    } else {
+        size_t shstr_header = section_table_offset + (size_t)(1 + plans.size()) * shentsize;
+        write_le<uint32_t>(data_, shstr_header, shstr_name_offset);
+        write_le<uint32_t>(data_, shstr_header + 4, 3);
+        write_le<uint64_t>(data_, shstr_header + 24, names_offset);
+        write_le<uint64_t>(data_, shstr_header + 32, names.size());
+        write_le<uint64_t>(data_, shstr_header + 48, 1);
+    }
+
+    size_t new_base = section_table_offset + (size_t)(has_sections ? shnum : 1) * shentsize;
+    for (size_t i = 0; i < plans.size(); ++i) {
+        size_t shdr = new_base + (size_t)i * shentsize;
+        write_le<uint32_t>(data_, shdr, name_offsets[i]);
+        write_le<uint32_t>(data_, shdr + 4, 1);
+        write_le<uint64_t>(data_, shdr + 8, plans[i].writable ? 0x3 : 0x6);
+        write_le<uint64_t>(data_, shdr + 16, vas[i]);
+        write_le<uint64_t>(data_, shdr + 24, offsets[i]);
+        write_le<uint64_t>(data_, shdr + 32, (uint64_t)plans[i].size);
+        write_le<uint64_t>(data_, shdr + 48, 16);
+    }
+
+    write_le<uint64_t>(data_, 32, region_start);
     write_le<uint64_t>(data_, 40, section_table_offset);
-    write_le<uint16_t>(data_, 56, phnum + 1);
-    write_le<uint16_t>(data_, 60, shnum + 1);
+    write_le<uint16_t>(data_, 56, (uint16_t)(phnum + new_loads));
+    write_le<uint16_t>(data_, 58, shentsize);
+    write_le<uint16_t>(data_, 60, new_shnum);
+    write_le<uint16_t>(data_, 62, shstrndx);
     if (!parse_elf()) throw std::runtime_error("failed to reparse modified ELF");
 }
 
