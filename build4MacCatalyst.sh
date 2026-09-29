@@ -11,4 +11,4 @@ chmod +x ./Arc-mobile
 xattr -c ./Arc-mobile
 codesign -f -s - ./Arc-mobile
 ./Arc-mobile
-lldb ./Arc-mobile -o "run"
+# lldb ./Arc-mobile -o "run"
