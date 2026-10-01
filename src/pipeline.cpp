@@ -19,6 +19,7 @@
 #include <array>
 #include <cstdint>
 #include <algorithm>
+#include <thread>
 #include <fstream>
 #include <sstream>
 #include <chrono>
@@ -303,7 +304,8 @@ static std::vector<uint8_t> patch_payload(
     throw std::runtime_error("unsupported patch action");
 }
 
-static bool matches_expected(const std::filesystem::path &output_path,
+static bool matches_expected(BinaryImage &image,
+                             const std::filesystem::path &output_path,
                              const HookAction &action,
                              const std::vector<uint8_t> &payload,
                              const std::map<std::string, uint64_t> &function_targets = {},
@@ -313,15 +315,16 @@ static bool matches_expected(const std::filesystem::path &output_path,
         : assemble_aarch64(action.expected, action.address, function_targets, va_range);
     if (expected.size() != payload.size())
         throw std::runtime_error("expected ASM must cover the same number of bytes as the patch");
-    auto &binary = parse_binary(output_path);
-    int off = file_offset(binary, action.address);
-    auto data = read_file(output_path);
-    if (off < 0 || expected.size() > data.size() - (size_t)off)
+    int off = file_offset(image, action.address);
+    if (off < 0)
         throw std::runtime_error("patch out of range");
-    if (memcmp(data.data() + off, expected.data(), expected.size()) != 0) {
+    auto current_bytes = read_range(output_path, off, (int64_t)expected.size());
+    if ((int)current_bytes.size() != (int)expected.size())
+        throw std::runtime_error("patch out of range");
+    if (memcmp(current_bytes.data(), expected.data(), expected.size()) != 0) {
         uint32_t current;
         uint32_t expected_code;
-        memcpy(&current, data.data() + off, 4);
+        memcpy(&current, current_bytes.data(), 4);
         memcpy(&expected_code, expected.data(), 4);
         char context[128];
         snprintf(context, sizeof(context), "current=0x%08x expected=0x%08x",
@@ -361,15 +364,42 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
     };
     std::vector<Compiled> compiled;
     PluginProgress progress(plugins);
+    // Compiling a plugin shells out to clang++; the plugins are independent of
+    // each other, so they are built concurrently instead of one after another.
+    std::vector<std::unique_ptr<PluginBlob>> blobs(plugins.size());
+    std::vector<std::string> failures(plugins.size());
+    {
+        std::vector<std::thread> workers;
+        workers.reserve(plugins.size());
+        for (size_t i = 0; i < plugins.size(); ++i) {
+            workers.emplace_back([&, i] {
+                try {
+                    blobs[i].reset(new PluginBlob(
+                        compile_plugin(plugins[i].path, &input_path)));
+                } catch (const std::exception &e) {
+                    failures[i] = plugins[i].name + ": " + e.what();
+                } catch (...) {
+                    failures[i] = plugins[i].name + ": unknown error";
+                }
+            });
+        }
+        for (auto &worker : workers)
+            worker.join();
+        for (size_t i = 0; i < failures.size(); ++i)
+            if (!failures[i].empty())
+                throw std::runtime_error(failures[i]);
+    }
     for (size_t i = 0; i < plugins.size(); ++i) {
         auto &spec = plugins[i];
         Compiled c;
         c.spec = &spec;
         c.progress_index = i;
-        c.blob = compile_plugin(spec.path, &input_path);
-        spec.actions = c.blob.declarations;
-        if (!c.blob.declarations.empty())
+        if (blobs[i] && !blobs[i]->declarations.empty()) {
+            c.blob = std::move(*blobs[i]);
+            blobs[i].reset();
+            spec.actions = c.blob.declarations;
             compiled.push_back(std::move(c));
+        }
         progress.update(i, 15);
     }
     if (compiled.empty()) {
@@ -602,9 +632,10 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         }
     }
     // parse_binary re-parses into its static cache on every call, which
-    // invalidates the layout reference; capture the VA range while it is
-    // still valid.
+    // invalidates any layout reference held across calls; capture everything
+    // that outlives the next parse up front.
     const AsmVaRange output_va_range = AsmVaRange::of(layout);
+    const bool output_is_macho = layout.is_macho();
 
     auto place = [](std::vector<uint8_t> &target, int offset,
                     const std::vector<uint8_t> &source) {
@@ -644,6 +675,12 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         progress.update(cp.progress_index, 72);
     }
 
+    // The layout is already final here, so a single parse covers every direct
+    // patch instead of re-parsing the whole image once per site.
+    auto output_image = BinaryImage::parse(output_path);
+    if (!output_image)
+        throw std::runtime_error("failed to parse " + output_path.string());
+
     for (auto &[cp, action] : direct) {
         uint64_t code_va = cp->has_hooks
             ? cp->segment_va + (uint64_t)cp->code_offset : 0;
@@ -662,10 +699,11 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
                                                     (uint64_t)wrapper->second;
         }
         auto payload = patch_payload(*action, targets, output_va_range);
-        if (action->has_expected && !matches_expected(output_path, *action, payload, targets,
+        if (action->has_expected && !matches_expected(*output_image, output_path,
+                                                      *action, payload, targets,
                                                       output_va_range))
             continue;
-        patch_bytes_va(output_path, output_path, action->address, payload);
+        patch_bytes_va(*output_image, output_path, action->address, payload);
     }
     for (auto &cp : compiled)
         if (!cp.has_hooks)
@@ -700,7 +738,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
             site.original.resize(site.hook_size);
             auto control = build_hook_dispatch(control_va, va, site.hook_size, site.original,
                                                handlers, site.overrides_original,
-                                               layout.is_macho());
+                                               output_is_macho);
             place(site.owner->content, site.control_offset, control);
         }
     };
@@ -717,10 +755,14 @@ static bool standard_pipeline(const std::filesystem::path &input_path,
         progress.update(cp.progress_index, 95);
     }
 
+    // prepare_sites above replaced the cached image, so `layout` is dangling
+    // here; re-parse once into a fresh image that already reflects the direct
+    // patches applied above.
+    auto &patch_layout = parse_binary(output_path);
     auto patch_sites = [&](auto &sites) {
         for (auto &[va, site] : sites) {
             uint64_t control_va = site.owner->segment_va + site.control_offset;
-            patch_hook_window(output_path, output_path, va, site.hook_size, control_va);
+            patch_hook_window(patch_layout, output_path, va, site.hook_size, control_va);
             progress.update(site.owner->progress_index, 100);
         }
     };

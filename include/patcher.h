@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstdint>
 #include <filesystem>
+#include "binary_image.h"
 
 struct PluginBlob;
 
@@ -45,15 +46,19 @@ std::vector<uint8_t> build_hook_cave(
     bool branch_host = false,
     const std::vector<uint64_t> *nop_addrs = nullptr);
 
-void patch_hook_window(const std::filesystem::path &binary_path,
+// Every one of these takes an already parsed image so a batch of patches does
+// not re-read and re-parse the whole (24 MB+) target once per site.
+int va_to_offset(BinaryImage &binary, uint64_t va);
+
+void patch_hook_window(BinaryImage &binary,
                        const std::filesystem::path &output_path,
                        uint64_t src_va, int size, uint64_t dst_va);
 
-void patch_call_window(const std::filesystem::path &binary_path,
+void patch_call_window(BinaryImage &binary,
                        const std::filesystem::path &output_path,
                        uint64_t src_va, int size, uint64_t dst_va);
 
-void patch_bytes_va(const std::filesystem::path &binary_path,
+void patch_bytes_va(BinaryImage &binary,
                     const std::filesystem::path &output_path,
                     uint64_t va, const std::vector<uint8_t> &payload);
 

@@ -363,72 +363,55 @@ static void codesign(const std::filesystem::path &path) {
 #endif
 }
 
-static int va_to_offset(BinaryImage *binary, uint64_t va) {
+int va_to_offset(BinaryImage *binary, uint64_t va) {
     auto off = binary->virtual_address_to_offset(va);
     if (!off)
         throw std::runtime_error("cannot map VA");
     return (int)*off;
 }
 
-void patch_hook_window(const std::filesystem::path &binary_path,
+int va_to_offset(BinaryImage &binary, uint64_t va) {
+    return va_to_offset(&binary, va);
+}
+
+void patch_hook_window(BinaryImage &image,
                        const std::filesystem::path &output_path,
                        uint64_t src_va, int size, uint64_t dst_va) {
-    (void)binary_path;
-    auto binary = BinaryImage::parse(output_path);
-    if (!binary)
-        throw std::runtime_error("failed to parse " + output_path.string());
-
-    int off = va_to_offset(binary.get(), src_va);
+    int off = va_to_offset(&image, src_va);
     auto branch = armcave::aarch64::make_branch_sequence(src_va, dst_va, false);
-    auto data = read_file(output_path);
 
     if ((int)branch.size() > size || size % 4)
         throw std::runtime_error("hook window too small");
 
-    if (off < 0 || (size_t)off + (size_t)size > data.size())
+    if (off < 0)
         throw std::runtime_error("hook window is outside the file");
-    memcpy(&data[off], branch.data(), branch.size());
-    for (int pos = (int)branch.size(); pos < size; pos += 4)
-        memcpy(&data[off + pos], NOP, 4);
-
-    write_file(output_path, data);
+    std::vector<uint8_t> data((size_t)size);
+    for (int pos = 0; pos < size; pos += 4) memcpy(data.data() + pos, NOP, 4);
+    memcpy(data.data(), branch.data(), branch.size());
+    write_range(output_path, off, data);
 }
 
-void patch_call_window(const std::filesystem::path &binary_path,
+void patch_call_window(BinaryImage &image,
                        const std::filesystem::path &output_path,
                        uint64_t src_va, int size, uint64_t dst_va) {
-    (void)binary_path;
-    auto binary = BinaryImage::parse(output_path);
-    if (!binary)
-        throw std::runtime_error("failed to parse " + output_path.string());
-
-    int off = va_to_offset(binary.get(), src_va);
+    int off = va_to_offset(&image, src_va);
     auto call = armcave::aarch64::make_branch_sequence(src_va, dst_va, true);
-    auto data = read_file(output_path);
     if ((int)call.size() > size || size % 4)
         throw std::runtime_error("call window too small");
-    if (off < 0 || (size_t)off + (size_t)size > data.size())
+    if (off < 0)
         throw std::runtime_error("call window is outside the file");
-    memcpy(&data[off], call.data(), call.size());
-    for (int pos = (int)call.size(); pos < size; pos += 4)
-        memcpy(&data[off + pos], NOP, 4);
-    write_file(output_path, data);
+    std::vector<uint8_t> data((size_t)size);
+    for (int pos = 0; pos < size; pos += 4) memcpy(data.data() + pos, NOP, 4);
+    memcpy(data.data(), call.data(), call.size());
+    write_range(output_path, off, data);
 }
 
-void patch_bytes_va(const std::filesystem::path &binary_path,
+void patch_bytes_va(BinaryImage &image,
                     const std::filesystem::path &output_path,
                     uint64_t va, const std::vector<uint8_t> &payload) {
-    (void)binary_path;
-    auto binary = BinaryImage::parse(output_path);
-    if (!binary)
-        throw std::runtime_error("failed to parse " + output_path.string());
-
-    int off = va_to_offset(binary.get(), va);
-    auto data = read_file(output_path);
-    if (off + (int)payload.size() > (int)data.size())
-        throw std::runtime_error("patch out of range");
-    memcpy(&data[off], payload.data(), payload.size());
-    write_file(output_path, data);
+    int off = va_to_offset(&image, va);
+    if (off < 0) throw std::runtime_error("patch offset is outside the file");
+    write_range(output_path, off, payload);
 }
 
 std::pair<uint64_t, uint64_t> patch_hook_macho(
@@ -487,7 +470,7 @@ std::pair<uint64_t, uint64_t> patch_hook_macho(
     blob.resize(size, 0);
 
     write_at_offset(output_path, cave_off, blob, size);
-    patch_hook_window(output_path, output_path, hook_va, hook_size, cave_va);
+    patch_hook_window(*after.bin, output_path, hook_va, hook_size, cave_va);
     codesign(output_path);
 
     return {hook_va, cave_va};

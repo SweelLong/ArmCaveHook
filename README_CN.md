@@ -124,6 +124,44 @@ Android（ELF）侧的洞穴同样按这条规则划分，但 `PT_LOAD` **没有
 4 → 6（24,443,920 字节）；ELF 的 LOAD 3 → 11（29,445,600 字节）变为 3 → 5（29,347,968 字节）。
 Mach-O 侧顺带还省了 load command 空间：8 条 152 字节命令变 2 条共 784 字节。
 
+## 注入性能
+
+打补丁慢**不是** C++ 编译慢。`armcave` 工具本身冷编译只要约 4.4 秒（增量 0.1 秒），
+耗时全在注入阶段。
+
+<p align="center"><img src="docs/images/injection-performance_CN.svg" alt="一趟注入耗时分解：优化前 44.3 秒，优化后 8.2 秒" width="680"></p>
+
+根因是所有写路径都复用同一对函数：`read_file()`（`ifstream` 读**整个**文件）和
+`write_file()`（`ofstream` 以 `ios::trunc` 打开，重写**整个**文件）。对一个 24 MB
+的目标打 68 条直接补丁，等于把镜像读了 68 遍、重写了 68 遍（约 4.9GB IO），
+而且每轮还要从头解析一遍 Mach-O（每次 246ms，`BinaryImage::parse` 会读完整镜像并建符号表）。
+
+上面是 Apple 配置（`Arc-mobile.mac-catalyst`，5 个插件，68 条直接补丁，14 个 hook 位点）
+在 Apple Silicon 上一次完整注入的耗时分解，单核约 96% 占用。阶段数字来自保序的差量计时：
+在 `pipeline.cpp` / `compiler.cpp` / `patcher.cpp` 里给每段插上同样的计时器，把这三个
+目标文件单独编进 `build/CMakeFiles/armcave.dir/src/` 再 link 即可，不必清目录。
+
+### 优化项
+
+1. **局部 IO 代替整文件重写**：新增 `read_range()` / `write_range()`（以
+   `binary|in|out` 打开 `fstream`，seek 到目标偏移再写）。`write_at_offset()` 和
+   三个补丁写入函数现在只碰自己要改的那几个字节。
+2. **复用解析结果**：`patch_hook_window()` / `patch_call_window()` /
+   `patch_bytes_va()` / `matches_expected()` 改成接收 `BinaryImage &` 而不是路径，
+   直接补丁循环只解析一次最终布局，不再每个位点解析一次。
+3. **插件并行编译**：插件之间互不依赖，用 `std::thread` 并发 fork `clang++`。
+   并行产出的 `.o` 与串行编译逐字节一致。
+
+### 产物等价性
+
+用同一份源码、**只**回退性能改动构建的对照二进制，产出的文件与优化版在偏移
+24,378,087 之前逐字节完全一致；之后全部落在 Mach-O 尾部的 ad-hoc 代码签名区
+（code directory 内嵌时间戳），而**同一份**优化二进制连跑两次在那一区也有同样量级的差异。
+
+这次比对还顺带挖出一个 latent bug 值得记一笔：`parse_binary()` 每次调用都给函数内
+`static unique_ptr` 重新赋值，所以跨过下一次 `parse_binary()` 之后还持有着的
+`BinaryImage &` 就是悬空引用。hook 窗口写入现在改用刚解析出来的镜像。
+
 ## 文档
 
 - [架构](docs/architecture_CN.md)

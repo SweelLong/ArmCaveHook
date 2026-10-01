@@ -385,7 +385,8 @@ static uint64_t relocation_target(const RelocEntry &reloc,
     if (reloc.has_absolute_target)
         return reloc.absolute_target + reloc.addend;
     if (reloc.symbol_value == 0 && reloc.symbol_section.empty()) {
-        uint64_t target = resolve_armcave_va(reloc.symbol_name);
+        uint64_t target = resolve_armcave_data(reloc.symbol_name);
+        if (!target) target = resolve_armcave_va(reloc.symbol_name);
         if (!target) target = resolve_via_symbol_table(binary, reloc.symbol_name);
         if (!target) throw std::runtime_error("unresolved symbol: " + reloc.symbol_name);
         return target + reloc.addend;

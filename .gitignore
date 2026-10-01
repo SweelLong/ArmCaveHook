@@ -21,6 +21,10 @@ CMakeUserPresets.json
 # User
 *.patched
 
+# Scratch space a patch run drops here on purpose (the runtime itself uses the
+# OS temporary directory, which is reaped on reboot)
+/tmp/
+
 # These directories are now in the ArmCaveHook-Arcplugins submodule
 /plugins/
 /binaries/

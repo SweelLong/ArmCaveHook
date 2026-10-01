@@ -24,6 +24,8 @@ static std::filesystem::path project_root() {
 static std::string tempdir(const char *prefix) {
     static std::atomic<unsigned long long> counter{0};
     std::error_code ec;
+    // The OS temporary directory is reaped on reboot, so scratch space from a
+    // patch run never accumulates on disk.
     auto base = std::filesystem::temp_directory_path(ec);
     if (ec)
         throw std::runtime_error("cannot determine temporary directory");

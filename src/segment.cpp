@@ -21,6 +21,33 @@ void write_file(const std::filesystem::path &path, const std::vector<uint8_t> &d
     if (!data.empty()) f.write((const char *)data.data(), data.size());
 }
 
+std::vector<uint8_t> read_range(const std::filesystem::path &path,
+                                int64_t offset, int64_t length) {
+    std::vector<uint8_t> data((size_t)length);
+    if (length <= 0) return data;
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("cannot read: " + path.string());
+    f.seekg((std::streamoff)offset);
+    f.read((char *)data.data(), (std::streamsize)length);
+    if (f.gcount() != (std::streamsize)length)
+        throw std::runtime_error("read out of range: " + path.string());
+    return data;
+}
+
+void write_range(const std::filesystem::path &path, int64_t offset,
+                 const std::vector<uint8_t> &payload) {
+    std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+    if (!f) throw std::runtime_error("cannot open for patch: " + path.string());
+    f.seekg(0, std::ios::end);
+    std::streamoff end = f.tellg();
+    if (offset < 0 || offset + (int64_t)payload.size() > (int64_t)end)
+        throw std::runtime_error("patch out of range: " + path.string());
+    f.seekp((std::streamoff)offset);
+    if (!payload.empty()) f.write((const char *)payload.data(), (std::streamsize)payload.size());
+    f.flush();
+    if (!f) throw std::runtime_error("failed to patch: " + path.string());
+}
+
 int align(int value, int page_size) {
     return (value + page_size - 1) & ~(page_size - 1);
 }
@@ -103,14 +130,16 @@ void add_segments(const std::filesystem::path &binary_path,
 
 void write_at_offset(const std::filesystem::path &path, int offset,
                      const std::vector<uint8_t> &payload, int size) {
-    auto data = read_file(path);
-    int limit = size >= 0 ? size : (int)payload.size();
-    if (offset + limit > (int)data.size())
-        throw std::runtime_error("write out of range");
-    memcpy(&data[offset], payload.data(), payload.size());
-    if (size > (int)payload.size())
-        memset(&data[offset + payload.size()], 0, size - payload.size());
-    write_file(path, data);
+    if (offset < 0) throw std::runtime_error("write out of range");
+    if (size > (int)payload.size()) {
+        // Widen the payload to the full reserved size so trailing bytes are
+        // cleared in the same pass.
+        std::vector<uint8_t> padded((size_t)size, 0);
+        std::copy(payload.begin(), payload.end(), padded.begin());
+        write_range(path, offset, padded);
+        return;
+    }
+    write_range(path, offset, payload);
 }
 
 int segment_file_offset(BinaryImage &binary, const std::string &name) {

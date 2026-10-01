@@ -144,6 +144,54 @@ Both charts come from patching with four plugins. Mach-O: segments 4 → 12
 load command space: eight 152-byte commands became two commands totalling
 784 bytes.
 
+## Injection performance
+
+<p align="center"><img src="docs/images/injection-performance.svg" alt="Injection pass time breakdown: 44.3 s before, 8.2 s after" width="680"></p>
+
+A patch run is **not** slow because of C++ compilation: building the `armcave`
+tool itself takes ~4.4s from a clean build directory (~0.1s incremental). The
+cost is all in the injection pass. Every write path used to go through the same
+two helpers — `read_file()` (an `ifstream` reading the **whole** file) and
+`write_file()` (an `ofstream` opened with `ios::trunc`, so it rewrites the
+**whole** file) — so patching the 24 MB `Arc-mobile.mac-catalyst` image with 68
+direct patches read and rewrote it 68 times, roughly 4.9 GB of I/O, and each
+round also re-parsed the Mach-O from scratch (246 ms per parse, since
+`BinaryImage::parse` reads the image and builds its symbol table). The chart is
+one run of that profile on Apple Silicon, single-threaded and ~96% busy on one
+core.
+
+The phase timings come from order-preserving differential timers around each
+stage. To reproduce them, add the same timers to `pipeline.cpp` /
+`compiler.cpp` / `patcher.cpp`, rebuild just those three objects into
+`build/CMakeFiles/armcave.dir/src/` and relink — no clean build needed.
+
+### Fixes
+
+1. **Partial I/O instead of whole-file rewrites.** New `read_range()` /
+   `write_range()` primitives (`std::fstream` opened `binary|in|out`, seek to
+   the target offset, write). `write_at_offset()` and the three patch writers
+   now touch only the bytes they are changing.
+2. **Reuse the parsed image.** `patch_hook_window()`, `patch_call_window()`,
+   `patch_bytes_va()` and `matches_expected()` take a `BinaryImage &` instead of
+   a path, so the direct-patch loop parses the final layout **once** instead of
+   once per site.
+3. **Compile plugins concurrently.** Plugins have no dependency on each other,
+   so they are built in parallel with `std::thread`. The resulting `.o` files are
+   byte-identical to the serial build.
+
+### Output equivalence
+
+A control binary built from the same sources with **only** the performance
+changes reverted produces an output that is byte-identical to the optimised
+output up to offset 24,378,087; everything past that point is the Mach-O tail
+ad-hoc code signature (the code directory embeds a timestamp), which differs
+between any two runs of the *same* binary as well.
+
+While doing this comparison the instrumentation also exposed a latent bug worth
+keeping in mind: `parse_binary()` reassigns a function-local `static
+unique_ptr`, so any `BinaryImage &` held across a later `parse_binary()` call
+is dangling. The hook-window writers now hold a freshly parsed image instead.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
