@@ -42,16 +42,26 @@ static std::string tempdir(const char *prefix) {
     throw std::runtime_error("cannot create temporary directory");
 }
 
-static std::string shell_quote(const std::string &value) {
 #ifdef _WIN32
-    std::string out = "\"";
-    for (char c : value) {
-        if (c == '"') out += "\\\"";
-        else out += c;
+#include <windows.h>
+
+// 参数一律按 UTF-8 解释：clang.exe 收到的 UTF-16 参数仍然按 UTF-8 解析，
+// 所以这里必须从 CP_UTF8 转，不能用 ANSI 代码页。
+static std::wstring utf8_to_wide(const std::string &value) {
+    if (value.empty()) return std::wstring();
+    int need = MultiByteToWideChar(CP_UTF8, 0, value.data(), (int)value.size(), nullptr, 0);
+    if (need <= 0) {
+        std::wstring fallback(value.size(), L'?');
+        for (size_t i = 0; i < value.size(); ++i)
+            fallback[i] = (wchar_t)(unsigned char)value[i];
+        return fallback;
     }
-    out += '"';
+    std::wstring out((size_t)need, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, value.data(), (int)value.size(), &out[0], need);
     return out;
+}
 #else
+static std::string shell_quote(const std::string &value) {
     std::string out = "'";
     for (char c : value) {
         if (c == '\'') out += "'\\''";
@@ -59,26 +69,77 @@ static std::string shell_quote(const std::string &value) {
     }
     out += '\'';
     return out;
-#endif
 }
 
+static std::string quiet_redirect() {
+    return " >/dev/null 2>/dev/null";
+}
+
+static std::string compiler_error_redirect(const std::filesystem::path &path) {
+    return " >/dev/null 2>" + shell_quote(path.string());
+}
+#endif
+
+// Windows 上不把命令拼成字符串交给 system()：cmd.exe 的引号/转义规则与 POSIX shell
+// 不同，路径里一个空格、结尾反斜杠或任何一个多余引号，都会让 cmd 把整行吞成一个 token
+// （现象：'clang++" -target ...' 不是内部或外部命令）， clang 根本没被启动。
+// 改为直接按 argv 启动进程，彻底绕开 shell 解析。
 static std::string clang_driver(bool cxx) {
     return cxx ? "clang++" : "clang";
 }
 
-static std::string quiet_redirect() {
+// 统一执行入口：stderr_file 为空则丢弃子进程输出，否则把子进程 stderr 写进该文件。
+// 所有候选参数必须用 UTF-8 字节传入（Windows 上路径取 path::u8string()），
+// 这样在 CP_UTF8 下转成的 UTF-16 里仍是 UTF-8 文本，clang.exe 才能正确解析路径。
+static int run_clang(const std::vector<std::string> &args,
+                     const std::filesystem::path *stderr_file = nullptr) {
 #ifdef _WIN32
-    return " >NUL 2>NUL";
-#else
-    return " >/dev/null 2>/dev/null";
-#endif
-}
+    std::vector<std::wstring> wide;
+    wide.reserve(args.size());
+    for (const auto &arg : args) wide.push_back(utf8_to_wide(arg));
+    std::vector<wchar_t *> argvp;
+    argvp.reserve(wide.size() + 1);
+    for (auto &arg : wide) argvp.push_back(const_cast<wchar_t *>(arg.c_str()));
+    argvp.push_back(nullptr);
 
-static std::string compiler_error_redirect(const std::filesystem::path &path) {
-#ifdef _WIN32
-    return " >NUL 2>" + shell_quote(path.string());
+    SECURITY_ATTRIBUTES sa = {};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE sink = CreateFileW(L"NUL", FILE_APPEND_DATA, 0, &sa, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (stderr_file) {
+        sink = CreateFileW(stderr_file->wstring().c_str(), FILE_APPEND_DATA, 0, &sa,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    if (sink == INVALID_HANDLE_VALUE) sink = NULL;
+
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    si.dwFlags |= STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = sink;
+    si.hStdError = sink;
+
+    PROCESS_INFORMATION pi = {};
+    std::wstring app = utf8_to_wide(args.empty() ? std::string("clang") : args[0]);
+    int rc = -1;
+    // lpCommandLine 是 LPWSTR（单个 wchar_t*），而 argvp 是 wchar_t** 数组，必须显式转。
+    if (CreateProcessW(&app[0], reinterpret_cast<LPWSTR>(argvp.data()), nullptr, nullptr,
+                       FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        rc = (int)(code & 0xFF);
+    }
+    if (sink != INVALID_HANDLE_VALUE && sink != NULL) CloseHandle(sink);
+    return rc;
 #else
-    return " >/dev/null 2>" + shell_quote(path.string());
+    std::string cmd = shell_quote(args[0]);
+    for (size_t i = 1; i < args.size(); ++i) cmd += " " + shell_quote(args[i]);
+    cmd += stderr_file ? compiler_error_redirect(*stderr_file) : quiet_redirect();
+    return system(cmd.c_str());
 #endif
 }
 
@@ -375,12 +436,16 @@ static std::vector<uint8_t> extract_cave_asm() {
         std::ofstream f(src);
         f << "#include \"armcave.h\"\n";
     }
-    std::string cmd = shell_quote(clang_driver(true)) + " -target arm64-apple-macosx13.0 -c -Oz -fno-stack-protector "
-                      "-std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics "
-                      "-I" + shell_quote((project_root() / "include").string()) + " "
-                      + shell_quote(src.string()) + " -o " + shell_quote(out.string()) + quiet_redirect();
-    int rc = system(cmd.c_str());
-    (void)rc;
+    std::vector<std::string> args = {
+        clang_driver(true), "-target", "arm64-apple-macosx13.0", "-c", "-Oz",
+        "-fno-stack-protector", "-std=c++17", "-fno-exceptions", "-fno-rtti",
+        "-fno-threadsafe-statics",
+    };
+    args.push_back("-I" + (project_root() / "include").u8string());
+    args.push_back(src.u8string());
+    args.push_back("-o");
+    args.push_back(out.u8string());
+    (void)run_clang(args);
     auto mo = open_macho(out.string());
     if (!mo.bin) return {};
     auto *sec = mo.section("__caveasm");
@@ -653,10 +718,13 @@ static MachO assemble_aarch64_object(
             normalize_asm_text(source), address, symbol_targets);
         f << ".text\n" << normalize_absolute_branches(normalized, address, va_range) << "\n";
     }
-    std::string cmd = shell_quote(clang_driver(false)) +
-                      " -target arm64-apple-macosx13.0 -c " + shell_quote(src.string()) +
-                      " -o " + shell_quote(out.string()) + compiler_error_redirect(error);
-    if (system(cmd.c_str()) != 0) {
+    std::vector<std::string> args = {
+        clang_driver(false), "-target", "arm64-apple-macosx13.0", "-c",
+    };
+    args.push_back(src.u8string());
+    args.push_back("-o");
+    args.push_back(out.u8string());
+    if (run_clang(args, &error) != 0) {
         std::ifstream input(error);
         std::string detail((std::istreambuf_iterator<char>(input)),
                            std::istreambuf_iterator<char>());
@@ -749,9 +817,12 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     if (path.extension() != ".cpp")
         throw std::runtime_error("plugin must be a .cpp file: " + path.string());
 
-    std::string cmd = shell_quote(clang_driver(true)) + " -target arm64-apple-macosx13.0 -c -Oz -fno-stack-protector "
-                      "-std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics "
-                      "-I" + shell_quote((project_root() / "include").string());
+    std::vector<std::string> args = {
+        clang_driver(true), "-target", "arm64-apple-macosx13.0", "-c", "-Oz",
+        "-fno-stack-protector", "-std=c++17", "-fno-exceptions", "-fno-rtti",
+        "-fno-threadsafe-statics",
+    };
+    args.push_back("-I" + (project_root() / "include").u8string());
     bool target_is_elf = false;
     if (target_binary) {
         std::ifstream target(*target_binary, std::ios::binary);
@@ -762,21 +833,18 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
                         magic[2] == 'L' && magic[3] == 'F';
     }
     if (target_is_elf)
-        cmd += " -DARMCAVE_ELF=1";
-    if (!target_binary)
-        cmd += " -ffreestanding -fno-builtin";
-    cmd += " " + shell_quote(path.string()) + " -o " + shell_quote(out.string()) + quiet_redirect();
-    int rc = system(cmd.c_str());
+        args.push_back("-DARMCAVE_ELF=1");
+    if (!target_binary) {
+        args.push_back("-ffreestanding");
+        args.push_back("-fno-builtin");
+    }
+    args.push_back(path.u8string());
+    args.push_back("-o");
+    args.push_back(out.u8string());
+    int rc = run_clang(args);
     if (rc != 0) {
-        cmd = shell_quote(clang_driver(true)) + " -target arm64-apple-macosx13.0 -c -Oz -fno-stack-protector "
-              "-std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics "
-              "-I" + shell_quote((project_root() / "include").string());
-        if (target_is_elf)
-            cmd += " -DARMCAVE_ELF=1";
-        if (!target_binary)
-            cmd += " -ffreestanding -fno-builtin";
-        cmd += " " + shell_quote(path.string()) + " -o " + shell_quote(out.string());
-        rc = system(cmd.c_str());
+        // 失败重试一次并把 clang 的错误信息放出来，便于定位
+        rc = run_clang(args);
         if (rc != 0)
             throw std::runtime_error("clang++ failed for " + path.string());
     }
