@@ -11,7 +11,8 @@
 #include <cxxabi.h>
 #endif
 
-static std::vector<std::string> names(const std::string &symbol_name) {
+static std::vector<std::string> names(const std::string &symbol_name)
+{
     std::vector<std::string> out;
     out.push_back(symbol_name);
     std::string s = symbol_name;
@@ -19,18 +20,21 @@ static std::vector<std::string> names(const std::string &symbol_name) {
         out.push_back(s.substr(1));
     else
         out.push_back("_" + s);
-    out.push_back("__" + [&]() {
+    out.push_back("__" + [&]()
+                  {
         auto t = symbol_name;
         while (!t.empty() && t[0] == '_') t.erase(0, 1);
-        return t;
-    }());
+        return t; }());
     return out;
 }
 
-static uint64_t resolve_marker(const std::string &symbol_name, const std::string &marker) {
-    for (auto &name : names(symbol_name)) {
+static uint64_t resolve_marker(const std::string &symbol_name, const std::string &marker)
+{
+    for (auto &name : names(symbol_name))
+    {
         auto idx = name.find(marker);
-        if (idx == std::string::npos) continue;
+        if (idx == std::string::npos)
+            continue;
         std::string raw = name.substr(idx + marker.size());
         while (!raw.empty() && (raw.back() == 'U' || raw.back() == 'L' || raw.back() == 'u' || raw.back() == 'l'))
             raw.pop_back();
@@ -39,38 +43,40 @@ static uint64_t resolve_marker(const std::string &symbol_name, const std::string
     return 0;
 }
 
-static uint64_t resolve_armcave_va(const std::string &symbol_name) {
+static uint64_t resolve_armcave_va(const std::string &symbol_name)
+{
     return resolve_marker(symbol_name, "armcave_va_");
 }
 
-static uint64_t resolve_armcave_data(const std::string &symbol_name) {
+static uint64_t resolve_armcave_data(const std::string &symbol_name)
+{
     return resolve_marker(symbol_name, "armcave_data_");
 }
 
-static std::optional<uint64_t> read_u64(BinaryImage *binary, uint64_t address) {
+static std::optional<uint64_t> read_u64(BinaryImage *binary, uint64_t address)
+{
     auto offset = binary->virtual_address_to_offset(address);
-    if (!offset || *offset > binary->data().size() ||
-        sizeof(uint64_t) > binary->data().size() - *offset)
+    if (!offset || *offset > binary->data().size() || sizeof(uint64_t) > binary->data().size() - *offset)
         return std::nullopt;
     uint64_t value = 0;
     memcpy(&value, binary->data().data() + *offset, sizeof(value));
     return value;
 }
 
-static std::optional<uint32_t> read_u32(BinaryImage *binary, uint64_t address) {
+static std::optional<uint32_t> read_u32(BinaryImage *binary, uint64_t address)
+{
     auto offset = binary->virtual_address_to_offset(address);
-    if (!offset || *offset > binary->data().size() ||
-        sizeof(uint32_t) > binary->data().size() - *offset)
+    if (!offset || *offset > binary->data().size() || sizeof(uint32_t) > binary->data().size() - *offset)
         return std::nullopt;
     uint32_t value = 0;
     memcpy(&value, binary->data().data() + *offset, sizeof(value));
     return value;
 }
 
-static std::optional<uint64_t> pointer_target(BinaryImage *binary,
-                                               uint64_t address,
-                                               uint64_t raw) {
-    if (const auto *fixup = binary->chained_fixup(address)) {
+static std::optional<uint64_t> pointer_target(BinaryImage *binary, uint64_t address, uint64_t raw)
+{
+    if (const auto *fixup = binary->chained_fixup(address))
+    {
         if (fixup->bind || !fixup->target)
             return std::nullopt;
         raw = fixup->target;
@@ -86,13 +92,15 @@ static std::optional<uint64_t> pointer_target(BinaryImage *binary,
     return std::nullopt;
 }
 
-static std::optional<std::string> read_string(BinaryImage *binary, uint64_t address) {
+static std::optional<std::string> read_string(BinaryImage *binary, uint64_t address)
+{
     auto offset = binary->virtual_address_to_offset(address);
     if (!offset || *offset >= binary->data().size())
         return std::nullopt;
     size_t end = (size_t)*offset;
     size_t limit = std::min(binary->data().size(), end + (size_t)256);
-    while (end < limit && binary->data()[end]) {
+    while (end < limit && binary->data()[end])
+    {
         unsigned char c = binary->data()[end];
         if (c < 0x20 || c > 0x7e)
             return std::nullopt;
@@ -100,34 +108,31 @@ static std::optional<std::string> read_string(BinaryImage *binary, uint64_t addr
     }
     if (end == limit)
         return std::nullopt;
-    return std::string((const char *)binary->data().data() + *offset,
-                       end - (size_t)*offset);
+    return std::string((const char *)binary->data().data() + *offset, end - (size_t)*offset);
 }
 
-static std::optional<uint64_t> objc_stub_selector_ref(BinaryImage *binary,
-                                                       uint64_t stub) {
+static std::optional<uint64_t> objc_stub_selector_ref(BinaryImage *binary, uint64_t stub)
+{
     auto first = read_u32(binary, stub);
     auto second = read_u32(binary, stub + 4);
     if (!first || !second)
         return std::nullopt;
     auto adrp = armcave::aarch64::decode(*first, stub);
-    if (adrp.kind != armcave::aarch64::InstructionKind::ADRP ||
-        adrp.register_index != 1 ||
-        (*second & 0xffc003ffU) != 0xf9400021U)
+    if (adrp.kind != armcave::aarch64::InstructionKind::ADRP || adrp.register_index != 1 || (*second & 0xffc003ffU) != 0xf9400021U)
         return std::nullopt;
     uint64_t offset = (uint64_t)((*second >> 10) & 0xfffU) * 8;
     return adrp.target + offset;
 }
 
-static std::string objc_selector(const std::string &symbol_name) {
+static std::string objc_selector(const std::string &symbol_name)
+{
     const std::string prefix = "objc_msgSend$";
     auto pos = symbol_name.find(prefix);
-    return pos == std::string::npos ? std::string() :
-        symbol_name.substr(pos + prefix.size());
+    return pos == std::string::npos ? std::string() : symbol_name.substr(pos + prefix.size());
 }
 
-static uint64_t resolve_objc_stub(BinaryImage *binary,
-                                  const std::string &symbol_name) {
+static uint64_t resolve_objc_stub(BinaryImage *binary, const std::string &symbol_name)
+{
     std::string selector = objc_selector(symbol_name);
     if (selector.empty())
         return 0;
@@ -136,7 +141,8 @@ static uint64_t resolve_objc_stub(BinaryImage *binary,
         return 0;
     for (uint64_t stub = stubs->virtual_address;
          stub + 8 <= stubs->virtual_address + stubs->size;
-         stub += 32) {
+         stub += 32)
+    {
         auto selref = objc_stub_selector_ref(binary, stub);
         if (!selref)
             continue;
@@ -150,24 +156,35 @@ static uint64_t resolve_objc_stub(BinaryImage *binary,
     return 0;
 }
 
-static uint64_t resolve_via_symbol_table(BinaryImage *binary, const std::string &symbol_name) {
-    if (binary->is_elf()) {
-        for (const auto &candidate : names(symbol_name)) {
+static uint64_t resolve_via_symbol_table(BinaryImage *binary, const std::string &symbol_name)
+{
+    if (binary->is_elf())
+    {
+        for (const auto &candidate : names(symbol_name))
+        {
             auto direct = binary->symbol_address(candidate);
-            if (direct) return *direct;
+            if (direct)
+                return *direct;
             auto stub = binary->import_stub(candidate);
-            if (stub) return *stub;
+            if (stub)
+                return *stub;
         }
         return 0;
     }
     BinarySection *stubs = nullptr;
     for (auto &s : binary->sections())
-        if (s.name == "__stubs") { stubs = &s; break; }
-    if (!stubs) return resolve_objc_stub(binary, symbol_name);
+        if (s.name == "__stubs")
+        {
+            stubs = &s;
+            break;
+        }
+    if (!stubs)
+        return resolve_objc_stub(binary, symbol_name);
     auto ns = names(symbol_name);
     std::set<std::string> name_set(ns.begin(), ns.end());
     int size = stubs->reserved2 ? (int)stubs->reserved2 : 12;
-    for (int i = 0; i < (int)stubs->size / size; i++) {
+    for (int i = 0; i < (int)stubs->size / size; i++)
+    {
         int idx = (int)stubs->reserved1 + i;
         auto *symbol = binary->indirect_symbol(idx);
         if (symbol && name_set.count(*symbol))
@@ -176,14 +193,18 @@ static uint64_t resolve_via_symbol_table(BinaryImage *binary, const std::string 
     return resolve_objc_stub(binary, symbol_name);
 }
 
-static std::string demangled_name(const std::string &name) {
+static std::string demangled_name(const std::string &name)
+{
 #ifdef __GNUG__
     std::vector<std::string> candidates{name};
-    if (!name.empty() && name[0] == '_') candidates.push_back(name.substr(1));
-    for (const auto &candidate : candidates) {
+    if (!name.empty() && name[0] == '_')
+        candidates.push_back(name.substr(1));
+    for (const auto &candidate : candidates)
+    {
         int status = 0;
         char *value = abi::__cxa_demangle(candidate.c_str(), nullptr, nullptr, &status);
-        if (status == 0 && value) {
+        if (status == 0 && value)
+        {
             std::string result(value);
             free(value);
             return result;
@@ -194,44 +215,55 @@ static std::string demangled_name(const std::string &name) {
     return {};
 }
 
-uint64_t find_function_address(BinaryImage *binary, const std::string &query) {
-    if (!binary || query.empty()) return 0;
+uint64_t find_function_address(BinaryImage *binary, const std::string &query)
+{
+    if (!binary || query.empty())
+        return 0;
     std::set<uint64_t> matches;
-    for (const auto &symbol : binary->symbols()) {
-        if (symbol.undefined() || !symbol.value) continue;
+    for (const auto &symbol : binary->symbols())
+    {
+        if (symbol.undefined() || !symbol.value)
+            continue;
         std::string plain = symbol.name;
-        if (!plain.empty() && plain[0] == '_') plain.erase(plain.begin());
+        if (!plain.empty() && plain[0] == '_')
+            plain.erase(plain.begin());
         std::string demangled = demangled_name(symbol.name);
-        bool match = symbol.name == query || plain == query ||
-                     symbol.name.find(query) != std::string::npos ||
-                     plain.find(query) != std::string::npos ||
-                     (!demangled.empty() && (demangled == query ||
-                                              demangled.find(query) != std::string::npos));
-        if (match) matches.insert(symbol.value);
+        bool match = symbol.name == query || plain == query || symbol.name.find(query) != std::string::npos || plain.find(query) != std::string::npos || (!demangled.empty() && (demangled == query || demangled.find(query) != std::string::npos));
+        if (match)
+            matches.insert(symbol.value);
     }
-    if (matches.size() == 1) return *matches.begin();
-    for (const auto &candidate : names(query)) {
+    if (matches.size() == 1)
+        return *matches.begin();
+    for (const auto &candidate : names(query))
+    {
         auto value = binary->symbol_address(candidate);
-        if (value) matches.insert(*value);
+        if (value)
+            matches.insert(*value);
     }
     return matches.size() == 1 ? *matches.begin() : 0;
 }
 
-static uint64_t resolve_import_slot(BinaryImage *binary, const std::string &symbol_name) {
-    if (binary->is_elf()) {
-        for (const auto &candidate : names(symbol_name)) {
+static uint64_t resolve_import_slot(BinaryImage *binary, const std::string &symbol_name)
+{
+    if (binary->is_elf())
+    {
+        for (const auto &candidate : names(symbol_name))
+        {
             auto slot = binary->import_slot(candidate);
-            if (slot) return *slot;
+            if (slot)
+                return *slot;
         }
         return 0;
     }
     auto ns = names(symbol_name);
     std::set<std::string> name_set(ns.begin(), ns.end());
-    for (auto &sec : binary->sections()) {
+    for (auto &sec : binary->sections())
+    {
         auto sn = sec.name;
         if (sn != "__got" && sn != "__la_symbol_ptr" && sn != "__nl_symbol_ptr")
             continue;
-        for (int i = 0; i < (int)sec.size / 8; i++) {
+        for (int i = 0; i < (int)sec.size / 8; i++)
+        {
             int idx = (int)sec.reserved1 + i;
             auto *symbol = binary->indirect_symbol(idx);
             if (symbol && name_set.count(*symbol))
@@ -241,21 +273,26 @@ static uint64_t resolve_import_slot(BinaryImage *binary, const std::string &symb
     return 0;
 }
 
-std::vector<std::pair<std::string, std::string>> list_available_symbols(
-    const std::filesystem::path &binary_path) {
+std::vector<std::pair<std::string, std::string>> list_available_symbols(const std::filesystem::path &binary_path)
+{
     auto binary = BinaryImage::parse(binary_path);
     if (!binary)
         throw std::runtime_error("unsupported binary file");
     std::vector<std::pair<std::string, std::string>> out;
-    if (binary->is_elf()) {
-        for (const auto &symbol : binary->symbols()) {
-            if (symbol.name.empty() || symbol.undefined() || !symbol.value) continue;
+    if (binary->is_elf())
+    {
+        for (const auto &symbol : binary->symbols())
+        {
+            if (symbol.name.empty() || symbol.undefined() || !symbol.value)
+                continue;
             char addr[32];
             snprintf(addr, sizeof(addr), "0x%llx", (unsigned long long)symbol.value);
             out.emplace_back(symbol.name, addr);
         }
-        for (const auto &item : binary->imports()) {
-            if (item.name.empty() || !item.stub_address) continue;
+        for (const auto &item : binary->imports())
+        {
+            if (item.name.empty() || !item.stub_address)
+                continue;
             char addr[32];
             snprintf(addr, sizeof(addr), "0x%llx", (unsigned long long)item.stub_address);
             out.emplace_back(item.name, addr);
@@ -263,12 +300,15 @@ std::vector<std::pair<std::string, std::string>> list_available_symbols(
         return out;
     }
     BinarySection *stubs = binary->section("__stubs");
-    if (stubs) {
+    if (stubs)
+    {
         int size = stubs->reserved2 ? (int)stubs->reserved2 : 12;
-        for (int i = 0; i < (int)stubs->size / size; i++) {
+        for (int i = 0; i < (int)stubs->size / size; i++)
+        {
             int idx = (int)stubs->reserved1 + i;
             auto *symbol = binary->indirect_symbol(idx);
-            if (symbol && !symbol->empty()) {
+            if (symbol && !symbol->empty())
+            {
                 char addr[32];
                 snprintf(addr, sizeof(addr), "0x%llx", (unsigned long long)(stubs->virtual_address + i * size));
                 out.emplace_back(*symbol, addr);
@@ -276,15 +316,16 @@ std::vector<std::pair<std::string, std::string>> list_available_symbols(
         }
     }
     BinarySection *objc_stubs = binary->section("__objc_stubs");
-    if (objc_stubs) {
-        for (uint64_t stub = objc_stubs->virtual_address;
-             stub + 8 <= objc_stubs->virtual_address + objc_stubs->size;
-             stub += 32) {
+    if (objc_stubs)
+    {
+        for (uint64_t stub = objc_stubs->virtual_address; stub + 8 <= objc_stubs->virtual_address + objc_stubs->size; stub += 32)
+        {
             auto selref = objc_stub_selector_ref(binary.get(), stub);
             auto raw = selref ? read_u64(binary.get(), *selref) : std::nullopt;
             auto name = raw && selref ? pointer_target(binary.get(), *selref, *raw) : std::nullopt;
             auto selector = name ? read_string(binary.get(), *name) : std::nullopt;
-            if (selector) {
+            if (selector)
+            {
                 char addr[32];
                 snprintf(addr, sizeof(addr), "0x%llx", (unsigned long long)stub);
                 out.emplace_back("_objc_msgSend$" + *selector, addr);
@@ -294,7 +335,8 @@ std::vector<std::pair<std::string, std::string>> list_available_symbols(
     return out;
 }
 
-static uint32_t read_word(const std::vector<uint8_t> &data, int off) {
+static uint32_t read_word(const std::vector<uint8_t> &data, int off)
+{
     if (off < 0 || (size_t)off + 4 > data.size())
         throw std::runtime_error("relocation offset is outside text");
     uint32_t insn;
@@ -302,38 +344,39 @@ static uint32_t read_word(const std::vector<uint8_t> &data, int off) {
     return insn;
 }
 
-static void write_word(std::vector<uint8_t> &data, int off, uint32_t insn) {
+static void write_word(std::vector<uint8_t> &data, int off, uint32_t insn)
+{
     if (off < 0 || (size_t)off + 4 > data.size())
         throw std::runtime_error("relocation offset is outside text");
     memcpy(data.data() + off, &insn, 4);
 }
 
-static void write_qword(std::vector<uint8_t> &data, int off, uint64_t value) {
+static void write_qword(std::vector<uint8_t> &data, int off, uint64_t value)
+{
     if (off < 0 || (size_t)off + 8 > data.size())
         throw std::runtime_error("relocation offset is outside text");
     memcpy(data.data() + off, &value, 8);
 }
 
-static void patch_branch26(std::vector<uint8_t> &data, int off,
-                           uint64_t src, uint64_t dst) {
+static void patch_branch26(std::vector<uint8_t> &data, int off, uint64_t src, uint64_t dst)
+{
     uint32_t insn = read_word(data, off);
     if (!armcave::aarch64::fits_branch26(src, dst))
         throw std::runtime_error("branch relocation out of range");
     int64_t delta = dst >= src ? (int64_t)(dst - src) : -(int64_t)(src - dst);
-    uint32_t encoded = (insn & 0xfc000000U) |
-        ((uint32_t)(delta / 4) & 0x03ffffffU);
+    uint32_t encoded = (insn & 0xfc000000U) | ((uint32_t)(delta / 4) & 0x03ffffffU);
     write_word(data, off, encoded);
 }
 
-static void patch_page21(std::vector<uint8_t> &data, int off,
-                         uint64_t pc, uint64_t target) {
+static void patch_page21(std::vector<uint8_t> &data, int off, uint64_t pc, uint64_t target)
+{
     uint32_t insn = read_word(data, off);
-    uint32_t encoded = armcave::aarch64::encode_adrp(
-        (uint8_t)(insn & 0x1fU), pc, target);
+    uint32_t encoded = armcave::aarch64::encode_adrp((uint8_t)(insn & 0x1fU), pc, target);
     write_word(data, off, encoded);
 }
 
-static void patch_pageoff12(std::vector<uint8_t> &data, int off, uint64_t target) {
+static void patch_pageoff12(std::vector<uint8_t> &data, int off, uint64_t target)
+{
     uint32_t insn = read_word(data, off);
     int scale = 1;
     if ((insn & 0x3B000000) == 0x39000000)
@@ -347,8 +390,8 @@ static void patch_pageoff12(std::vector<uint8_t> &data, int off, uint64_t target
     write_word(data, off, insn);
 }
 
-static void patch_got_load_pageoff12(std::vector<uint8_t> &data, int off,
-                                     uint64_t target) {
+static void patch_got_load_pageoff12(std::vector<uint8_t> &data, int off, uint64_t target)
+{
     uint32_t insn = read_word(data, off);
     int scale = ((insn & 0xC0000000) == 0xC0000000) ? 8 : 4;
     if ((target & 0xfffU) % (uint64_t)scale)
@@ -360,17 +403,18 @@ static void patch_got_load_pageoff12(std::vector<uint8_t> &data, int off,
     write_word(data, off, insn);
 }
 
-static void patch_ldr_to_add(std::vector<uint8_t> &data, int off, uint64_t target) {
+static void patch_ldr_to_add(std::vector<uint8_t> &data, int off, uint64_t target)
+{
     uint32_t insn = read_word(data, off);
     uint32_t opcode;
     if ((insn & 0xFF000000) == 0xF9000000)
         opcode = 0x91000000;
     else if ((insn & 0xFF000000) == 0xB9000000)
         opcode = 0x11000000;
-    else {
+    else
+    {
         char message[96];
-        snprintf(message, sizeof(message),
-                 "unexpected GOT-load instruction 0x%08x at text offset 0x%x", insn, off);
+        snprintf(message, sizeof(message), "unexpected GOT-load instruction 0x%08x at text offset 0x%x", insn, off);
         throw std::runtime_error(message);
     }
     uint32_t imm12 = target & 0xFFF;
@@ -378,17 +422,19 @@ static void patch_ldr_to_add(std::vector<uint8_t> &data, int off, uint64_t targe
     write_word(data, off, insn);
 }
 
-static uint64_t relocation_target(const RelocEntry &reloc,
-                                  BinaryImage *binary,
-                                  const std::map<std::string, int> &offsets,
-                                  uint64_t text_va, uint64_t data_va) {
+static uint64_t relocation_target(const RelocEntry &reloc, BinaryImage *binary, const std::map<std::string, int> &offsets, uint64_t text_va, uint64_t data_va)
+{
     if (reloc.has_absolute_target)
         return reloc.absolute_target + reloc.addend;
-    if (reloc.symbol_value == 0 && reloc.symbol_section.empty()) {
+    if (reloc.symbol_value == 0 && reloc.symbol_section.empty())
+    {
         uint64_t target = resolve_armcave_data(reloc.symbol_name);
-        if (!target) target = resolve_armcave_va(reloc.symbol_name);
-        if (!target) target = resolve_via_symbol_table(binary, reloc.symbol_name);
-        if (!target) throw std::runtime_error("unresolved symbol: " + reloc.symbol_name);
+        if (!target)
+            target = resolve_armcave_va(reloc.symbol_name);
+        if (!target)
+            target = resolve_via_symbol_table(binary, reloc.symbol_name);
+        if (!target)
+            throw std::runtime_error("unresolved symbol: " + reloc.symbol_name);
         return target + reloc.addend;
     }
     if (reloc.symbol_section == "__text")
@@ -399,61 +445,48 @@ static uint64_t relocation_target(const RelocEntry &reloc,
     return data_va + (uint64_t)it->second + reloc.symbol_value + reloc.addend;
 }
 
-static uint64_t data_relocation_target(const RelocEntry &reloc,
-                                       BinaryImage *binary,
-                                       const std::map<std::string, int> &offsets,
-                                       uint64_t text_va, uint64_t data_va) {
+static uint64_t data_relocation_target(const RelocEntry &reloc, BinaryImage *binary, const std::map<std::string, int> &offsets, uint64_t text_va, uint64_t data_va)
+{
     if (reloc.has_absolute_target)
         return reloc.absolute_target + reloc.addend;
     uint64_t target = resolve_armcave_data(reloc.symbol_name);
-    if (target) return target + reloc.addend;
+    if (target)
+        return target + reloc.addend;
     if (!reloc.symbol_section.empty())
-        return relocation_target(reloc, binary, offsets,
-                                 text_va, data_va);
+        return relocation_target(reloc, binary, offsets, text_va, data_va);
     target = resolve_import_slot(binary, reloc.symbol_name);
-    if (!target) throw std::runtime_error("unresolved import slot: " + reloc.symbol_name);
+    if (!target)
+        throw std::runtime_error("unresolved import slot: " + reloc.symbol_name);
     return target + reloc.addend;
 }
 
 std::pair<std::vector<uint8_t>, std::vector<uint8_t>>
-resolve_plugin_relocs(
-    const std::vector<uint8_t> &text,
-    const std::vector<uint8_t> &extra,
-    const std::vector<RelocEntry> &relocs,
-    const std::map<std::string, int> &offsets,
-    const std::filesystem::path &binary_path,
-    uint64_t text_va,
-    uint64_t data_va) {
-
+resolve_plugin_relocs(const std::vector<uint8_t> &text, const std::vector<uint8_t> &extra, const std::vector<RelocEntry> &relocs, const std::map<std::string, int> &offsets, const std::filesystem::path &binary_path, uint64_t text_va, uint64_t data_va)
+{
     auto binary = BinaryImage::parse(binary_path);
     if (!binary)
         throw std::runtime_error("failed to parse " + binary_path.string());
-
     std::vector<uint8_t> text_buf = text;
     std::vector<uint8_t> extra_buf = extra;
-
-    for (auto &r : relocs) {
+    for (auto &r : relocs)
+    {
         int t = r.type;
         int off = r.address;
         auto &name = r.symbol_name;
         uint64_t val = r.symbol_value;
         auto &section = r.symbol_section;
         int64_t addend = r.addend;
-
-        if (t == 0 && !name.empty()) {
-            write_qword(text_buf, off,
-                        relocation_target(r, binary.get(), offsets,
-                                          text_va, data_va));
-
-        } else if (t == 2) {
-            uint64_t dst = relocation_target(r, binary.get(), offsets,
-                                              text_va, data_va);
+        if (t == 0 && !name.empty())
+            write_qword(text_buf, off, relocation_target(r, binary.get(), offsets, text_va, data_va));
+        else if (t == 2)
+        {
+            uint64_t dst = relocation_target(r, binary.get(), offsets, text_va, data_va);
             uint64_t src = text_va + (uint64_t)off;
             uint32_t instruction = read_word(text_buf, off);
-            if (!armcave::aarch64::fits_branch26(src, dst)) {
+            if (!armcave::aarch64::fits_branch26(src, dst))
+            {
                 uint64_t veneer = text_va + text_buf.size();
-                auto sequence = armcave::aarch64::make_address_sequence(
-                    veneer, dst, 16);
+                auto sequence = armcave::aarch64::make_address_sequence(veneer, dst, 16);
                 text_buf.insert(text_buf.end(), sequence.begin(), sequence.end());
                 uint32_t jump = armcave::aarch64::encode_br(16);
                 text_buf.push_back((uint8_t)jump);
@@ -465,37 +498,23 @@ resolve_plugin_relocs(
                 dst = veneer;
             }
             patch_branch26(text_buf, off, src, dst);
-
-        } else if (t == 3) {
-            patch_page21(text_buf, off, text_va + (uint64_t)off,
-                         data_relocation_target(r, binary.get(), offsets,
-                                                text_va, data_va));
-
-        } else if (t == 4) {
-            patch_pageoff12(text_buf, off,
-                            data_relocation_target(r, binary.get(), offsets,
-                                                   text_va, data_va));
-
-        } else if (t == 5 && !name.empty()) {
-            patch_page21(text_buf, off, text_va + (uint64_t)off,
-                         data_relocation_target(r, binary.get(), offsets,
-                                                text_va, data_va));
-
-        } else if (t == 7) {
-            // ARM64_RELOC_PAGEOFF12: the ADD half of an adrl expansion.
-            patch_pageoff12(text_buf, off,
-                            data_relocation_target(r, binary.get(), offsets,
-                                                   text_va, data_va));
-
-        } else if (t == 6 && !name.empty()) {
-            uint64_t target = data_relocation_target(r, binary.get(), offsets,
-                                                     text_va, data_va);
+        }
+        else if (t == 3)
+            patch_page21(text_buf, off, text_va + (uint64_t)off, data_relocation_target(r, binary.get(), offsets, text_va, data_va));
+        else if (t == 4)
+            patch_pageoff12(text_buf, off, data_relocation_target(r, binary.get(), offsets, text_va, data_va));
+        else if (t == 5 && !name.empty())
+            patch_page21(text_buf, off, text_va + (uint64_t)off, data_relocation_target(r, binary.get(), offsets, text_va, data_va));
+        else if (t == 7)
+            patch_pageoff12(text_buf, off, data_relocation_target(r, binary.get(), offsets, text_va, data_va));
+        else if (t == 6 && !name.empty())
+        {
+            uint64_t target = data_relocation_target(r, binary.get(), offsets, text_va, data_va);
             if (resolve_armcave_data(name))
                 patch_ldr_to_add(text_buf, off, target);
             else
                 patch_got_load_pageoff12(text_buf, off, target);
         }
     }
-
     return {text_buf, extra_buf};
 }

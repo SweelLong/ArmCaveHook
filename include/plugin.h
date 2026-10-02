@@ -4,7 +4,8 @@
 #include <filesystem>
 #include <cstdint>
 
-struct HookAction {
+struct HookAction
+{
     std::string kind;
     uint64_t address = 0;
     std::string signature;
@@ -23,20 +24,25 @@ struct HookAction {
     int asm_offset = 0;
 };
 
-struct PluginSpec {
+struct PluginSpec
+{
     std::filesystem::path path;
     std::string name;
     std::vector<HookAction> actions;
 
-    std::string summary() const {
+    std::string summary() const
+    {
         std::string out;
-        for (size_t i = 0; i < actions.size(); i++) {
-            if (i > 0) out += ", ";
+        for (size_t i = 0; i < actions.size(); i++)
+        {
+            if (i > 0)
+                out += ", ";
             auto &a = actions[i];
             out += a.kind + ":";
             if (a.address == 0 && !a.handler.empty())
                 out += "entry";
-            else {
+            else
+            {
                 char buf[32];
                 snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)a.address);
                 out += buf;
@@ -46,6 +52,7 @@ struct PluginSpec {
     }
 };
 
-inline PluginSpec load_plugin(const std::filesystem::path &path) {
+inline PluginSpec load_plugin(const std::filesystem::path &path)
+{
     return PluginSpec{path, path.stem().string(), {}};
 }

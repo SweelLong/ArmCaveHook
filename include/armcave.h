@@ -4,16 +4,16 @@
 
 #ifdef ARMCAVE_ELF
 extern "C" int armcave_android_log_print(int priority, const char *tag,
-                                           const char *format)
-    asm("__android_log_print");
+                                         const char *format) asm("__android_log_print");
 #endif
 
-__attribute__((always_inline))
-static inline void armcave_sys_write(const char *p, int len) {
+__attribute__((always_inline)) static inline void armcave_sys_write(const char *p, int len)
+{
 #ifdef ARMCAVE_ELF
     char escaped[512];
     int out = 0;
-    for (int i = 0; i < len && out < (int)sizeof(escaped) - 1; ++i) {
+    for (int i = 0; i < len && out < (int)sizeof(escaped) - 1; ++i)
+    {
         if (p[i] == '%' && out < (int)sizeof(escaped) - 2)
             escaped[out++] = '%';
         escaped[out++] = p[i];
@@ -33,18 +33,23 @@ static inline void armcave_sys_write(const char *p, int len) {
 #endif
 }
 
-static inline int armcave_itoa(char *buf, int val) {
+static inline int armcave_itoa(char *buf, int val)
+{
     int pos = 0;
     unsigned int value;
-    if (val < 0) {
+    if (val < 0)
+    {
         buf[pos++] = '-';
         value = 0U - (unsigned int)val;
-    } else {
+    }
+    else
+    {
         value = (unsigned int)val;
     }
     char tmp[12];
     int tpos = 0;
-    do {
+    do
+    {
         tmp[tpos++] = '0' + (char)(value % 10);
         value /= 10;
     } while (value > 0);
@@ -54,35 +59,54 @@ static inline int armcave_itoa(char *buf, int val) {
     return pos;
 }
 
-static inline int armcave_utoa(char *buf, unsigned long val, int base, int upper) {
+static inline int armcave_utoa(char *buf, unsigned long val, int base, int upper)
+{
     int pos = 0;
     char tmp[32];
     int tpos = 0;
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    do {
+    do
+    {
         tmp[tpos++] = digits[val % (unsigned long)base];
         val /= (unsigned long)base;
     } while (val > 0);
-    if (base == 16) {
+    if (base == 16)
+    {
         buf[pos++] = '0';
         buf[pos++] = 'x';
     }
-    while (tpos > 0) buf[pos++] = tmp[--tpos];
+    while (tpos > 0)
+        buf[pos++] = tmp[--tpos];
     return pos;
 }
 
-static inline int armcave_vformat(char *buf, int size, const char *fmt, __builtin_va_list args) {
+static inline int armcave_vformat(char *buf, int size, const char *fmt, __builtin_va_list args)
+{
     int pos = 0;
     char c;
-    while ((c = *fmt++) && pos < size - 1) {
-        if (c != '%') { buf[pos++] = c; continue; }
-        if (!*fmt) break;
+    while ((c = *fmt++) && pos < size - 1)
+    {
+        if (c != '%')
+        {
+            buf[pos++] = c;
+            continue;
+        }
+        if (!*fmt)
+            break;
         char f = *fmt++;
         int is_long = 0;
-        if (f == 'l') { is_long = 1; f = *fmt++; }
-        switch (f) {
-        case '%': buf[pos++] = '%'; break;
-        case 'd': case 'i':
+        if (f == 'l')
+        {
+            is_long = 1;
+            f = *fmt++;
+        }
+        switch (f)
+        {
+        case '%':
+            buf[pos++] = '%';
+            break;
+        case 'd':
+        case 'i':
             pos += armcave_itoa(buf + pos, is_long ? (int)__builtin_va_arg(args, long) : __builtin_va_arg(args, int));
             break;
         case 'u':
@@ -94,10 +118,13 @@ static inline int armcave_vformat(char *buf, int size, const char *fmt, __builti
         case 'X':
             pos += armcave_utoa(buf + pos, is_long ? __builtin_va_arg(args, unsigned long) : __builtin_va_arg(args, unsigned int), 16, 1);
             break;
-        case 's': {
+        case 's':
+        {
             const char *s = __builtin_va_arg(args, const char *);
-            if (!s) s = "(null)";
-            while (*s && pos < size - 1) buf[pos++] = *s++;
+            if (!s)
+                s = "(null)";
+            while (*s && pos < size - 1)
+                buf[pos++] = *s++;
             break;
         }
         case 'c':
@@ -108,7 +135,8 @@ static inline int armcave_vformat(char *buf, int size, const char *fmt, __builti
             break;
         default:
             buf[pos++] = '%';
-            if (is_long) buf[pos++] = 'l';
+            if (is_long)
+                buf[pos++] = 'l';
             buf[pos++] = f;
             break;
         }
@@ -117,7 +145,8 @@ static inline int armcave_vformat(char *buf, int size, const char *fmt, __builti
     return pos;
 }
 
-static inline void logf(const char *fmt, ...) {
+static inline void logf(const char *fmt, ...)
+{
     char buf[256];
     __builtin_va_list args;
     __builtin_va_start(args, fmt);
@@ -126,12 +155,23 @@ static inline void logf(const char *fmt, ...) {
     armcave_sys_write(buf, len);
 }
 
-__attribute__((used, section("__TEXT,__caveasm")))
-static const unsigned char armcave_asm_data[] = {
-    0xff, 0x20, 0x03, 0xd5,
-    0xfd, 0x7b, 0xbf, 0xa9,
-    0xfd, 0x7b, 0xc1, 0xa8,
-    0xc0, 0x03, 0x5f, 0xd6,
+__attribute__((used, section("__TEXT,__caveasm"))) static const unsigned char armcave_asm_data[] = {
+    0xff,
+    0x20,
+    0x03,
+    0xd5,
+    0xfd,
+    0x7b,
+    0xbf,
+    0xa9,
+    0xfd,
+    0x7b,
+    0xc1,
+    0xa8,
+    0xc0,
+    0x03,
+    0x5f,
+    0xd6,
 };
 
 #define armcave_str2(x) #x
@@ -142,44 +182,33 @@ static const unsigned char armcave_asm_data[] = {
 #define armcave_cat(a, b) armcave_cat2(a, b)
 #define armcave_unique(prefix) armcave_cat(prefix, __COUNTER__)
 
-#define armcave_meta(kind, addr, handler, segment, ...) \
-    __attribute__((used, section("__DATA,__armhook"))) \
-    static const char armcave_unique(armcave_meta_)[] = \
-        kind "|addr=" armcave_str(addr) "|handler=" #handler \
-        "|regs=" #__VA_ARGS__ "|segment=" #segment; \
-    __attribute__((used, section("__DATA,__armkeep"))) \
-    static void *armcave_unique(armcave_keep_) = (void *)&handler
+#define armcave_meta(kind, addr, handler, segment, ...)                                                    \
+    __attribute__((used, section("__DATA,__armhook"))) static const char armcave_unique(armcave_meta_)[] = \
+        kind "|addr=" armcave_str(addr) "|handler=" #handler                                               \
+                                        "|regs=" #__VA_ARGS__ "|segment=" #segment;                        \
+    __attribute__((used, section("__DATA,__armkeep"))) static void *armcave_unique(armcave_keep_) = (void *)&handler
 
-#define armcave_meta_signature(kind, signature, handler, segment, ...) \
-    __attribute__((used, section("__DATA,__armhook"))) \
-    static const char armcave_unique(armcave_meta_signature_)[] = \
-        kind "|signature=" signature "|handler=" #handler \
-        "|regs=" #__VA_ARGS__ "|segment=" #segment; \
-    __attribute__((used, section("__DATA,__armkeep"))) \
-    static void *armcave_unique(armcave_signature_keep_) = (void *)&handler
+#define armcave_meta_signature(kind, signature, handler, segment, ...)                                               \
+    __attribute__((used, section("__DATA,__armhook"))) static const char armcave_unique(armcave_meta_signature_)[] = \
+        kind "|signature=" signature "|handler=" #handler                                                            \
+             "|regs=" #__VA_ARGS__ "|segment=" #segment;                                                             \
+    __attribute__((used, section("__DATA,__armkeep"))) static void *armcave_unique(armcave_signature_keep_) = (void *)&handler
 
-#define armcave_meta_symbol(kind, symbol, handler, segment, ...) \
-    __attribute__((used, section("__DATA,__armhook"))) \
-    static const char armcave_unique(armcave_meta_symbol_)[] = \
-        kind "|symbol=" symbol "|handler=" #handler \
-        "|regs=" #__VA_ARGS__ "|segment=" #segment; \
-    __attribute__((used, section("__DATA,__armkeep"))) \
-    static void *armcave_unique(armcave_symbol_keep_) = (void *)&handler
+#define armcave_meta_symbol(kind, symbol, handler, segment, ...)                                                  \
+    __attribute__((used, section("__DATA,__armhook"))) static const char armcave_unique(armcave_meta_symbol_)[] = \
+        kind "|symbol=" symbol "|handler=" #handler                                                               \
+             "|regs=" #__VA_ARGS__ "|segment=" #segment;                                                          \
+    __attribute__((used, section("__DATA,__armkeep"))) static void *armcave_unique(armcave_symbol_keep_) = (void *)&handler
 
-#define armcave_meta_objc(kind, class_name, selector, handler, segment, ...) \
-    __attribute__((used, section("__DATA,__armhook"))) \
-    static const char armcave_unique(armcave_meta_objc_)[] = \
-        kind "|objc_class=" class_name "|selector=" selector \
-        "|handler=" #handler "|regs=" #__VA_ARGS__ "|segment=" #segment; \
-    __attribute__((used, section("__DATA,__armkeep"))) \
-    static void *armcave_unique(armcave_objc_keep_) = (void *)&handler
+#define armcave_meta_objc(kind, class_name, selector, handler, segment, ...)                                    \
+    __attribute__((used, section("__DATA,__armhook"))) static const char armcave_unique(armcave_meta_objc_)[] = \
+        kind "|objc_class=" class_name "|selector=" selector                                                    \
+             "|handler=" #handler "|regs=" #__VA_ARGS__ "|segment=" #segment;                                   \
+    __attribute__((used, section("__DATA,__armkeep"))) static void *armcave_unique(armcave_objc_keep_) = (void *)&handler
 
-
-#define armcave_patch_meta(kind, addr, size, payload, segment) \
-    __attribute__((used, section("__DATA,__armhook"))) \
-    static const char armcave_unique(armcave_patch_meta_)[] = \
-        kind "|addr=" armcave_str(addr) "|size=" armcave_str(size) \
-        "|data=" payload "|segment=" #segment
+#define armcave_patch_meta(kind, addr, size, payload, segment)                                                   \
+    __attribute__((used, section("__DATA,__armhook"))) static const char armcave_unique(armcave_patch_meta_)[] = \
+        kind "|addr=" armcave_str(addr) "|size=" armcave_str(size) "|data=" payload "|segment=" #segment
 
 #define hook_replace(addr, handler, ...) \
     armcave_meta("hook_replace", addr, handler, auto, __VA_ARGS__)
@@ -214,15 +243,13 @@ static const unsigned char armcave_asm_data[] = {
 #define hook_detour_objc_method(class_name, selector, handler, ...) \
     armcave_meta_objc("hook_detour", class_name, selector, handler, auto, __VA_ARGS__)
 
-
 #define armcave_patch_asm(addr, asm_text) \
     armcave_patch_meta("patch_asm", addr, 0, asm_text, auto)
 
-#define armcave_patch_meta_expected(kind, addr, expected, payload, segment) \
-    __attribute__((used, section("__DATA,__armhook"))) \
-    static const char armcave_unique(armcave_patch_meta_expected_)[] = \
-        kind "|addr=" armcave_str(addr) "|expected=" expected \
-        "|size=0|data=" payload "|segment=" #segment
+#define armcave_patch_meta_expected(kind, addr, expected, payload, segment)                                               \
+    __attribute__((used, section("__DATA,__armhook"))) static const char armcave_unique(armcave_patch_meta_expected_)[] = \
+        kind "|addr=" armcave_str(addr) "|expected=" expected                                                             \
+                                        "|size=0|data=" payload "|segment=" #segment
 
 #define armcave_patch_asm_expected(addr, asm_text, expected) \
     armcave_patch_meta_expected("patch_asm", addr, expected, asm_text, auto)
@@ -231,7 +258,8 @@ static const unsigned char armcave_asm_data[] = {
 #define patch_asm(...) \
     armcave_pick_patch_asm(__VA_ARGS__, armcave_patch_asm_expected, armcave_patch_asm)(__VA_ARGS__)
 
-struct armcave_patch_hex_meta {
+struct armcave_patch_hex_meta
+{
     char bytes[1024];
 };
 
@@ -262,29 +290,24 @@ constexpr armcave_patch_hex_meta armcave_make_patch_hex_meta_va(
                                        (unsigned)(sizeof(chunks) / sizeof(chunks[0])));
 }
 
-#define armcave_patch_hex(addr, ...) \
-    __attribute__((used, section("__DATA,__armhook"))) \
-    static constexpr auto armcave_unique(armcave_patch_hex_meta_) = \
+#define armcave_patch_hex(addr, ...)                                                                                   \
+    __attribute__((used, section("__DATA,__armhook"))) static constexpr auto armcave_unique(armcave_patch_hex_meta_) = \
         armcave_make_patch_hex_meta_va(armcave_str(addr), __VA_ARGS__)
 
 #define patch_hex(addr, ...) armcave_patch_hex(addr, __VA_ARGS__)
 
-#define armcave_new_asm_func(name, ...) \
-    __attribute__((used, section("__DATA,__armhook"))) \
-    static const char armcave_unique(armcave_new_asm_meta_)[] = \
-        "new_asm_func|name=" #name "|args=" \
-        armcave_str_args(__VA_ARGS__)
+#define armcave_new_asm_func(name, ...)                                                                            \
+    __attribute__((used, section("__DATA,__armhook"))) static const char armcave_unique(armcave_new_asm_meta_)[] = \
+        "new_asm_func|name=" #name "|args=" armcave_str_args(__VA_ARGS__)
 
 #define new_asm_func(name, ...) \
     armcave_new_asm_func(name, __VA_ARGS__)
 
-#define armcave_new_cpp_func(handler, ...) \
-    __attribute__((used, section("__DATA,__armhook"))) \
-    static const char armcave_unique(armcave_new_cpp_meta_)[] = \
-        "new_cpp_func|name=" #handler "|handler=" #handler \
-        "|regs=" #__VA_ARGS__; \
-    __attribute__((used, section("__DATA,__armkeep"))) \
-    static void *armcave_unique(armcave_cpp_keep_) = (void *)&handler
+#define armcave_new_cpp_func(handler, ...)                                                                         \
+    __attribute__((used, section("__DATA,__armhook"))) static const char armcave_unique(armcave_new_cpp_meta_)[] = \
+        "new_cpp_func|name=" #handler "|handler=" #handler                                                         \
+        "|regs=" #__VA_ARGS__;                                                                                     \
+    __attribute__((used, section("__DATA,__armkeep"))) static void *armcave_unique(armcave_cpp_keep_) = (void *)&handler
 
 #define new_cpp_func(handler, ...) \
     armcave_new_cpp_func(handler, __VA_ARGS__)
@@ -299,29 +322,32 @@ constexpr armcave_patch_hex_meta armcave_make_patch_hex_meta_va(
     extern type name asm(symbol)
 
 template <typename T>
-static inline T read_mem(uintptr_t addr) {
+static inline T read_mem(uintptr_t addr)
+{
     return *(volatile T *)addr;
 }
 
 template <typename T>
-static inline void write_mem(uintptr_t addr, T value) {
+static inline void write_mem(uintptr_t addr, T value)
+{
     *(volatile T *)addr = value;
 }
 
-
-static inline uintptr_t resolve_vfunc(uintptr_t obj, uintptr_t offset) {
+static inline uintptr_t resolve_vfunc(uintptr_t obj, uintptr_t offset)
+{
     uintptr_t vt = read_mem<uintptr_t>(obj);
     return vt ? read_mem<uintptr_t>(vt + offset) : 0;
 }
 
-static inline uintptr_t read_typeinfo(uintptr_t obj) {
+static inline uintptr_t read_typeinfo(uintptr_t obj)
+{
     uintptr_t vt = read_mem<uintptr_t>(obj);
     return vt ? read_mem<uintptr_t>(vt - sizeof(uintptr_t)) : 0;
 }
 
-#define armcave_resolve_addr_impl(va, id) \
-    ({ \
+#define armcave_resolve_addr_impl(va, id)                      \
+    ({                                                         \
         extern char id asm("__armcave_data_" armcave_str(va)); \
-        (uintptr_t)&id; \
+        (uintptr_t)&id;                                        \
     })
 #define resolve_addr(va) armcave_resolve_addr_impl(va, armcave_unique(armcave_data_))

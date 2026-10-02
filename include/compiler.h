@@ -9,17 +9,20 @@
 #include "binary_image.h"
 #include "plugin.h"
 
-struct MachO {
+struct MachO
+{
     std::unique_ptr<BinaryImage> bin;
 
-    BinarySection *section(const std::string &name) {
+    BinarySection *section(const std::string &name)
+    {
         return bin ? bin->section(name) : nullptr;
     }
 };
 
 MachO open_macho(const std::string &path);
 
-struct RelocEntry {
+struct RelocEntry
+{
     int type = 0;
     int address = 0;
     std::string symbol_name;
@@ -31,7 +34,8 @@ struct RelocEntry {
     uint64_t absolute_target = 0;
 };
 
-struct PluginBlob {
+struct PluginBlob
+{
     std::vector<uint8_t> text;
     std::vector<uint8_t> extra;
     std::vector<HookAction> declarations;
@@ -55,11 +59,8 @@ std::vector<uint8_t> extract_cave_asm_save();
 std::vector<uint8_t> extract_cave_asm_restore();
 std::vector<uint8_t> extract_cave_asm_ret();
 
-// Numeric branch/page operands in plugin assembly are treated as absolute
-// VAs when they fall inside the target image's VA range.  The defaults keep
-// the historical Mach-O behavior where only VAs >= 0x100000000 were
-// recognized as absolute targets.
-struct AsmVaRange {
+struct AsmVaRange
+{
     uint64_t min = 0x100000000ULL;
     uint64_t max = ~0ULL;
 

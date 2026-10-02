@@ -46,8 +46,6 @@ std::vector<uint8_t> build_hook_cave(
     bool branch_host = false,
     const std::vector<uint64_t> *nop_addrs = nullptr);
 
-// Every one of these takes an already parsed image so a batch of patches does
-// not re-read and re-parse the whole (24 MB+) target once per site.
 int va_to_offset(BinaryImage &binary, uint64_t va);
 
 void patch_hook_window(BinaryImage &binary,

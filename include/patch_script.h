@@ -4,7 +4,8 @@
 #include <string>
 #include <vector>
 
-struct PatchScriptHook {
+struct PatchScriptHook
+{
     std::string kind = "hook_replace";
     std::string function;
     std::string signature;
@@ -15,7 +16,8 @@ struct PatchScriptHook {
     std::vector<std::string> register_args;
 };
 
-struct PatchScript {
+struct PatchScript
+{
     std::filesystem::path path;
     std::filesystem::path binary;
     std::filesystem::path output;

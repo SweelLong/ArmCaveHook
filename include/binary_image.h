@@ -7,19 +7,22 @@
 #include <string>
 #include <vector>
 
-enum class BinaryFormat {
+enum class BinaryFormat
+{
     MachO,
     ELF,
 };
 
-struct BinaryRelocation {
+struct BinaryRelocation
+{
     int type = 0;
     uint64_t address = 0;
     uint32_t symbol_index = 0;
     bool external = false;
 };
 
-struct BinarySymbol {
+struct BinarySymbol
+{
     std::string name;
     uint64_t value = 0;
     uint8_t type = 0;
@@ -28,13 +31,15 @@ struct BinarySymbol {
     bool undefined() const;
 };
 
-struct BinaryImport {
+struct BinaryImport
+{
     std::string name;
     uint64_t slot_address = 0;
     uint64_t stub_address = 0;
 };
 
-struct BinaryChainedFixup {
+struct BinaryChainedFixup
+{
     uint64_t address = 0;
     uint64_t target = 0;
     uint64_t raw = 0;
@@ -47,7 +52,8 @@ struct BinaryChainedFixup {
     std::string symbol;
 };
 
-struct BinarySection {
+struct BinarySection
+{
     std::string name;
     std::string segment_name;
     uint64_t virtual_address = 0;
@@ -66,7 +72,8 @@ private:
     friend class BinaryImage;
 };
 
-struct BinarySegment {
+struct BinarySegment
+{
     std::string name;
     uint64_t virtual_address = 0;
     uint64_t virtual_size = 0;
@@ -81,18 +88,16 @@ private:
     friend class BinaryImage;
 };
 
-// Plugin sections are appended in one batch so that a patch run adds a bounded
-// number of containers: on ELF at most two PT_LOAD entries (one R+X code cave
-// and one R+W data cave), on Mach-O at most two LC_SEGMENT_64 entries holding
-// every plugin section of the same protection class.
-struct BinarySectionPlan {
+struct BinarySectionPlan
+{
     std::string name;
     int size = 0;
     std::vector<uint8_t> content;
     bool writable = false;
 };
 
-class BinaryImage {
+class BinaryImage
+{
 public:
     static std::unique_ptr<BinaryImage> parse(const std::filesystem::path &path);
 
@@ -131,7 +136,8 @@ public:
     void write(const std::filesystem::path &path) const;
 
 private:
-    struct FatSlice {
+    struct FatSlice
+    {
         int32_t cpu_type = 0;
         int32_t cpu_subtype = 0;
         uint32_t alignment = 0;

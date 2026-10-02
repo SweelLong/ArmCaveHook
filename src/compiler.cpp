@@ -13,7 +13,8 @@
 #include <cctype>
 #include <algorithm>
 
-static std::filesystem::path project_root() {
+static std::filesystem::path project_root()
+{
 #ifdef ARMCAVE_PROJECT_ROOT
     return std::filesystem::path(ARMCAVE_PROJECT_ROOT);
 #else
@@ -21,19 +22,17 @@ static std::filesystem::path project_root() {
 #endif
 }
 
-static std::string tempdir(const char *prefix) {
+static std::string tempdir(const char *prefix)
+{
     static std::atomic<unsigned long long> counter{0};
     std::error_code ec;
-    // The OS temporary directory is reaped on reboot, so scratch space from a
-    // patch run never accumulates on disk.
     auto base = std::filesystem::temp_directory_path(ec);
     if (ec)
         throw std::runtime_error("cannot determine temporary directory");
-
-    for (int attempt = 0; attempt < 100; ++attempt) {
+    for (int attempt = 0; attempt < 100; ++attempt)
+    {
         auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        auto name = std::string(prefix) + std::to_string(stamp) + "_" +
-                    std::to_string(counter.fetch_add(1));
+        auto name = std::string(prefix) + std::to_string(stamp) + "_" + std::to_string(counter.fetch_add(1));
         auto path = base / name;
         if (std::filesystem::create_directory(path, ec))
             return path.string();
@@ -44,13 +43,13 @@ static std::string tempdir(const char *prefix) {
 
 #ifdef _WIN32
 #include <windows.h>
-
-// 参数一律按 UTF-8 解释：clang.exe 收到的 UTF-16 参数仍然按 UTF-8 解析，
-// 所以这里必须从 CP_UTF8 转，不能用 ANSI 代码页。
-static std::wstring utf8_to_wide(const std::string &value) {
-    if (value.empty()) return std::wstring();
+static std::wstring utf8_to_wide(const std::string &value)
+{
+    if (value.empty())
+        return std::wstring();
     int need = MultiByteToWideChar(CP_UTF8, 0, value.data(), (int)value.size(), nullptr, 0);
-    if (need <= 0) {
+    if (need <= 0)
+    {
         std::wstring fallback(value.size(), L'?');
         for (size_t i = 0; i < value.size(); ++i)
             fallback[i] = (wchar_t)(unsigned char)value[i];
@@ -61,71 +60,67 @@ static std::wstring utf8_to_wide(const std::string &value) {
     return out;
 }
 #else
-static std::string shell_quote(const std::string &value) {
+static std::string shell_quote(const std::string &value)
+{
     std::string out = "'";
-    for (char c : value) {
-        if (c == '\'') out += "'\\''";
-        else out += c;
+    for (char c : value)
+    {
+        if (c == '\'')
+            out += "'\\''";
+        else
+            out += c;
     }
     out += '\'';
     return out;
 }
 
-static std::string quiet_redirect() {
+static std::string quiet_redirect()
+{
     return " >/dev/null 2>/dev/null";
 }
 
-static std::string compiler_error_redirect(const std::filesystem::path &path) {
+static std::string compiler_error_redirect(const std::filesystem::path &path)
+{
     return " >/dev/null 2>" + shell_quote(path.string());
 }
 #endif
 
-// Windows 上不把命令拼成字符串交给 system()：cmd.exe 的引号/转义规则与 POSIX shell
-// 不同，路径里一个空格、结尾反斜杠或任何一个多余引号，都会让 cmd 把整行吞成一个 token
-// （现象：'clang++" -target ...' 不是内部或外部命令）， clang 根本没被启动。
-// 改为直接按 argv 启动进程，彻底绕开 shell 解析。
-static std::string clang_driver(bool cxx) {
+static std::string clang_driver(bool cxx)
+{
     return cxx ? "clang++" : "clang";
 }
 
-// 统一执行入口：stderr_file 为空则丢弃子进程输出，否则把子进程 stderr 写进该文件。
-// 所有候选参数必须用 UTF-8 字节传入（Windows 上路径取 path::u8string()），
-// 这样在 CP_UTF8 下转成的 UTF-16 里仍是 UTF-8 文本，clang.exe 才能正确解析路径。
-static int run_clang(const std::vector<std::string> &args,
-                     const std::filesystem::path *stderr_file = nullptr) {
+static int run_clang(const std::vector<std::string> &args, const std::filesystem::path *stderr_file = nullptr)
+{
 #ifdef _WIN32
     std::vector<std::wstring> wide;
     wide.reserve(args.size());
-    for (const auto &arg : args) wide.push_back(utf8_to_wide(arg));
+    for (const auto &arg : args)
+        wide.push_back(utf8_to_wide(arg));
     std::vector<wchar_t *> argvp;
     argvp.reserve(wide.size() + 1);
-    for (auto &arg : wide) argvp.push_back(const_cast<wchar_t *>(arg.c_str()));
+    for (auto &arg : wide)
+        argvp.push_back(const_cast<wchar_t *>(arg.c_str()));
     argvp.push_back(nullptr);
-
     SECURITY_ATTRIBUTES sa = {};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
-    HANDLE sink = CreateFileW(L"NUL", FILE_APPEND_DATA, 0, &sa, OPEN_EXISTING,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (stderr_file) {
-        sink = CreateFileW(stderr_file->wstring().c_str(), FILE_APPEND_DATA, 0, &sa,
-                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    }
-    if (sink == INVALID_HANDLE_VALUE) sink = NULL;
-
+    HANDLE sink = CreateFileW(L"NUL", FILE_APPEND_DATA, 0, &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (stderr_file)
+        sink = CreateFileW(stderr_file->wstring().c_str(), FILE_APPEND_DATA, 0, &sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (sink == INVALID_HANDLE_VALUE)
+        sink = NULL;
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     si.dwFlags |= STARTF_USESTDHANDLES;
     si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     si.hStdOutput = sink;
     si.hStdError = sink;
-
     PROCESS_INFORMATION pi = {};
     std::wstring app = utf8_to_wide(args.empty() ? std::string("clang") : args[0]);
     int rc = -1;
-    // lpCommandLine 是 LPWSTR（单个 wchar_t*），而 argvp 是 wchar_t** 数组，必须显式转。
-    if (CreateProcessW(&app[0], reinterpret_cast<LPWSTR>(argvp.data()), nullptr, nullptr,
-                       FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    if (CreateProcessW(&app[0], reinterpret_cast<LPWSTR>(argvp.data()), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+    {
         WaitForSingleObject(pi.hProcess, INFINITE);
         DWORD code = 0;
         GetExitCodeProcess(pi.hProcess, &code);
@@ -133,46 +128,68 @@ static int run_clang(const std::vector<std::string> &args,
         CloseHandle(pi.hProcess);
         rc = (int)(code & 0xFF);
     }
-    if (sink != INVALID_HANDLE_VALUE && sink != NULL) CloseHandle(sink);
+    if (sink != INVALID_HANDLE_VALUE && sink != NULL)
+        CloseHandle(sink);
     return rc;
 #else
     std::string cmd = shell_quote(args[0]);
-    for (size_t i = 1; i < args.size(); ++i) cmd += " " + shell_quote(args[i]);
+    for (size_t i = 1; i < args.size(); ++i)
+        cmd += " " + shell_quote(args[i]);
     cmd += stderr_file ? compiler_error_redirect(*stderr_file) : quiet_redirect();
     return system(cmd.c_str());
 #endif
 }
 
-MachO open_macho(const std::string &path) {
+MachO open_macho(const std::string &path)
+{
     MachO mo;
     auto binary = BinaryImage::parse(path);
-    if (binary && binary->is_macho()) mo.bin = std::move(binary);
+    if (binary && binary->is_macho())
+        mo.bin = std::move(binary);
     return mo;
 }
 
-static uint64_t parse_int(const std::string &value) {
+static uint64_t parse_int(const std::string &value)
+{
     auto s = value;
-    while (!s.empty() && (s[0] == ' ' || s[0] == '\t')) s.erase(0, 1);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
-    if (s.empty() || s == "0" || s == "entry") return 0;
+    while (!s.empty() && (s[0] == ' ' || s[0] == '\t'))
+        s.erase(0, 1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
+        s.pop_back();
+    if (s.empty() || s == "0" || s == "entry")
+        return 0;
     return strtoull(s.c_str(), nullptr, 0);
 }
 
-static std::string unescape_metadata(std::string value) {
+static std::string unescape_metadata(std::string value)
+{
     std::string out;
     out.reserve(value.size());
-    for (size_t i = 0; i < value.size(); ++i) {
-        if (value[i] != '\\' || i + 1 >= value.size()) {
+    for (size_t i = 0; i < value.size(); ++i)
+    {
+        if (value[i] != '\\' || i + 1 >= value.size())
+        {
             out += value[i];
             continue;
         }
         char escaped = value[++i];
-        switch (escaped) {
-        case 'n': out += '\n'; break;
-        case 'r': out += '\r'; break;
-        case 't': out += '\t'; break;
-        case '\\': out += '\\'; break;
-        case '"': out += '"'; break;
+        switch (escaped)
+        {
+        case 'n':
+            out += '\n';
+            break;
+        case 'r':
+            out += '\r';
+            break;
+        case 't':
+            out += '\t';
+            break;
+        case '\\':
+            out += '\\';
+            break;
+        case '"':
+            out += '"';
+            break;
         default:
             out += '\\';
             out += escaped;
@@ -182,7 +199,8 @@ static std::string unescape_metadata(std::string value) {
     return out;
 }
 
-static std::string trim_text(std::string value) {
+static std::string trim_text(std::string value)
+{
     while (!value.empty() && std::isspace((unsigned char)value.front()))
         value.erase(value.begin());
     while (!value.empty() && std::isspace((unsigned char)value.back()))
@@ -190,65 +208,91 @@ static std::string trim_text(std::string value) {
     return value;
 }
 
-static std::string unquote_metadata(std::string value) {
+static std::string unquote_metadata(std::string value)
+{
     value = trim_text(value);
     if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
         value = value.substr(1, value.size() - 2);
     return unescape_metadata(value);
 }
 
-static std::vector<std::string> parse_asm_lines(std::string value) {
+static std::vector<std::string> parse_asm_lines(std::string value)
+{
     value = trim_text(value);
-    if (value.empty()) return {};
-
+    if (value.empty())
+        return {};
     if (value.front() != '[')
         return {unquote_metadata(value)};
-
     std::vector<std::string> lines;
     bool saw_string = false;
-    for (size_t i = 0; i < value.size(); ++i) {
-        if (value[i] != '"') continue;
+    for (size_t i = 0; i < value.size(); ++i)
+    {
+        if (value[i] != '"')
+            continue;
         saw_string = true;
         std::string line;
-        for (++i; i < value.size(); ++i) {
-            if (value[i] == '"') break;
-            if (value[i] == '\\' && i + 1 < value.size()) {
+        for (++i; i < value.size(); ++i)
+        {
+            if (value[i] == '"')
+                break;
+            if (value[i] == '\\' && i + 1 < value.size())
+            {
                 char escaped = value[++i];
-                switch (escaped) {
-                case 'n': line += '\n'; break;
-                case 'r': line += '\r'; break;
-                case 't': line += '\t'; break;
-                case '\\': line += '\\'; break;
-                case '"': line += '"'; break;
-                default: line += escaped; break;
+                switch (escaped)
+                {
+                case 'n':
+                    line += '\n';
+                    break;
+                case 'r':
+                    line += '\r';
+                    break;
+                case 't':
+                    line += '\t';
+                    break;
+                case '\\':
+                    line += '\\';
+                    break;
+                case '"':
+                    line += '"';
+                    break;
+                default:
+                    line += escaped;
+                    break;
                 }
-            } else {
-                line += value[i];
             }
+            else
+                line += value[i];
         }
         lines.push_back(std::move(line));
     }
-    if (saw_string) return lines;
+    if (saw_string)
+        return lines;
     return {unquote_metadata(value)};
 }
 
-static std::string split_asm_statements(const std::vector<std::string> &lines) {
+static std::string split_asm_statements(const std::vector<std::string> &lines)
+{
     std::string source;
     bool quoted = false;
     bool escaped = false;
-    for (const auto &line : lines) {
-        for (char c : line) {
-            if (escaped) {
+    for (const auto &line : lines)
+    {
+        for (char c : line)
+        {
+            if (escaped)
+            {
                 source += c;
                 escaped = false;
                 continue;
             }
-            if (c == '\\' && quoted) {
+            if (c == '\\' && quoted)
+            {
                 source += c;
                 escaped = true;
                 continue;
             }
-            if (c == '"') {
+            if (c == '"')
+            {
                 quoted = !quoted;
                 source += c;
                 continue;
@@ -260,37 +304,45 @@ static std::string split_asm_statements(const std::vector<std::string> &lines) {
         }
         source += '\n';
     }
-    if (!source.empty()) source.pop_back();
+    if (!source.empty())
+        source.pop_back();
     return source;
 }
 
-static std::string normalize_asm_text(std::string source) {
+static std::string normalize_asm_text(std::string source)
+{
     std::string normalized;
     normalized.reserve(source.size());
     bool quoted = false;
     bool escaped = false;
-    for (size_t i = 0; i < source.size(); ++i) {
+    for (size_t i = 0; i < source.size(); ++i)
+    {
         char c = source[i];
-        if (escaped) {
+        if (escaped)
+        {
             normalized += c;
             escaped = false;
             continue;
         }
-        if (c == '\\' && quoted) {
+        if (c == '\\' && quoted)
+        {
             normalized += c;
             escaped = true;
             continue;
         }
-        if (c == '"') {
+        if (c == '"')
+        {
             quoted = !quoted;
             normalized += c;
             continue;
         }
-        if (!quoted && c == ';') {
+        if (!quoted && c == ';')
+        {
             normalized += '\n';
             continue;
         }
-        if (!quoted && c == '\\' && i + 1 < source.size() && source[i + 1] == 'n') {
+        if (!quoted && c == '\\' && i + 1 < source.size() && source[i + 1] == 'n')
+        {
             normalized += '\n';
             ++i;
             continue;
@@ -300,68 +352,92 @@ static std::string normalize_asm_text(std::string source) {
     return normalized;
 }
 
-static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
+static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data)
+{
     std::vector<HookAction> items;
     std::string all((const char *)data.data(), data.size());
     size_t pos = 0;
-    while (true) {
+    while (true)
+    {
         auto nul = all.find('\0', pos);
-        if (nul == std::string::npos) break;
+        if (nul == std::string::npos)
+            break;
         std::string text = all.substr(pos, nul - pos);
         pos = nul + 1;
-        while (!text.empty() && (unsigned char)text.back() <= 32) text.pop_back();
+        while (!text.empty() && (unsigned char)text.back() <= 32)
+            text.pop_back();
         auto bar = text.find('|');
-        if (bar == std::string::npos) continue;
+        if (bar == std::string::npos)
+            continue;
         HookAction act;
         act.kind = text.substr(0, bar);
         std::string rest = text.substr(bar + 1);
         size_t start = 0;
-        while (true) {
+        while (true)
+        {
             auto sep = rest.find('|', start);
             std::string part = rest.substr(start, sep - start);
             auto eq = part.find('=');
-            if (eq != std::string::npos) {
+            if (eq != std::string::npos)
+            {
                 std::string k = part.substr(0, eq);
                 std::string v = part.substr(eq + 1);
-                if (k == "addr") {
+                if (k == "addr")
                     act.address = (uint64_t)parse_int(v);
-                }
-                else if (k == "args" && act.kind == "new_asm_func") act.data = v;
-                else if (k == "signature") act.signature = v;
-                else if (k == "symbol") act.symbol = v;
-                else if (k == "objc_class") act.objc_class = v;
-                else if (k == "selector") act.selector = v;
-                else if (k == "swift") act.swift_name = v;
-                else if (k == "handler") act.handler = v;
-                else if (k == "name" && (act.kind == "new_asm_func" ||
-                                          act.kind == "new_cpp_func"))
+                else if (k == "args" && act.kind == "new_asm_func")
+                    act.data = v;
+                else if (k == "signature")
+                    act.signature = v;
+                else if (k == "symbol")
+                    act.symbol = v;
+                else if (k == "objc_class")
+                    act.objc_class = v;
+                else if (k == "selector")
+                    act.selector = v;
+                else if (k == "swift")
+                    act.swift_name = v;
+                else if (k == "handler")
+                    act.handler = v;
+                else if (k == "name" && (act.kind == "new_asm_func" || act.kind == "new_cpp_func"))
                     act.function_name = v;
-                else if (k == "segment") act.segment = v;
-                else if (k == "size") act.size = atoi(v.c_str());
-                else if (k == "expected") {
+                else if (k == "segment")
+                    act.segment = v;
+                else if (k == "size")
+                    act.size = atoi(v.c_str());
+                else if (k == "expected")
+                {
                     if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
                         v = v.substr(1, v.size() - 2);
                     act.expected = unescape_metadata(v);
                     act.has_expected = true;
                 }
-                else if (k == "data") act.data = v;
-                else if (k == "regs") {
+                else if (k == "data")
+                    act.data = v;
+                else if (k == "regs")
+                {
                     size_t rs = 0;
-                    while (true) {
+                    while (true)
+                    {
                         auto comma = v.find(',', rs);
                         std::string r = v.substr(rs, comma - rs);
-                        while (!r.empty() && r[0] == ' ') r.erase(0, 1);
-                        while (!r.empty() && r.back() == ' ') r.pop_back();
-                        if (!r.empty()) {
-                            for (auto &c : r) c = tolower(c);
+                        while (!r.empty() && r[0] == ' ')
+                            r.erase(0, 1);
+                        while (!r.empty() && r.back() == ' ')
+                            r.pop_back();
+                        if (!r.empty())
+                        {
+                            for (auto &c : r)
+                                c = tolower(c);
                             act.register_args.push_back(r);
                         }
-                        if (comma == std::string::npos) break;
+                        if (comma == std::string::npos)
+                            break;
                         rs = comma + 1;
                     }
                 }
             }
-            if (sep == std::string::npos) break;
+            if (sep == std::string::npos)
+                break;
             start = sep + 1;
         }
         items.push_back(act);
@@ -369,12 +445,15 @@ static std::vector<HookAction> parse_meta(const std::vector<uint8_t> &data) {
     return items;
 }
 
-static std::string init_segment(const std::filesystem::path &path) {
+static std::string init_segment(const std::filesystem::path &path)
+{
     std::ifstream f(path);
-    if (!f) return {};
+    if (!f)
+        return {};
     std::string line;
     std::regex re(R"(^\s*#\s*define\s+SEGMENT_NAME\s+([A-Za-z_][A-Za-z0-9_]*)\s*$)");
-    while (std::getline(f, line)) {
+    while (std::getline(f, line))
+    {
         std::smatch m;
         if (std::regex_search(line, m, re))
             return m[1];
@@ -382,53 +461,62 @@ static std::string init_segment(const std::filesystem::path &path) {
     return {};
 }
 
-static std::map<std::string, int> symbol_offsets(BinaryImage *obj, BinarySection *text_sec) {
+static std::map<std::string, int> symbol_offsets(BinaryImage *obj, BinarySection *text_sec)
+{
     std::map<std::string, int> out;
     uint64_t base = text_sec->virtual_address;
     uint64_t end = base + text_sec->size;
-    for (auto &sym : obj->symbols()) {
+    for (auto &sym : obj->symbols())
+    {
         auto name = sym.name;
-        if (name.empty()) continue;
+        if (name.empty())
+            continue;
         uint64_t val = sym.value;
-        if (base <= val && val < end) {
+        if (base <= val && val < end)
+        {
             int off = (int)(val - base);
             out[name] = off;
-            if (name[0] == '_') out[name.substr(1)] = off;
-        } else if (val < text_sec->size) {
+            if (name[0] == '_')
+                out[name.substr(1)] = off;
+        }
+        else if (val < text_sec->size)
+        {
             int off = (int)val;
             out[name] = off;
-            if (name[0] == '_') out[name.substr(1)] = off;
+            if (name[0] == '_')
+                out[name.substr(1)] = off;
         }
     }
     return out;
 }
 
-static std::map<std::string, int> data_symbol_offsets(
-    BinaryImage *obj, const std::map<std::string, int> &section_offsets) {
+static std::map<std::string, int> data_symbol_offsets(BinaryImage *obj, const std::map<std::string, int> &section_offsets)
+{
     std::map<std::string, int> out;
     const auto &sections = obj->sections();
-    for (const auto &sym : obj->symbols()) {
-        if (sym.name.empty() || sym.undefined() || sym.section_index == 0 ||
-            sym.section_index > sections.size())
+    for (const auto &sym : obj->symbols())
+    {
+        if (sym.name.empty() || sym.undefined() || sym.section_index == 0 || sym.section_index > sections.size())
             continue;
         const auto &section = sections[sym.section_index - 1];
         auto section_offset = section_offsets.find(section.name);
         if (section_offset == section_offsets.end())
             continue;
         uint64_t relative = sym.value;
-        if (section.virtual_address <= sym.value &&
-            sym.value < section.virtual_address + section.size)
+        if (section.virtual_address <= sym.value && sym.value < section.virtual_address + section.size)
             relative = sym.value - section.virtual_address;
         if (relative >= section.size)
             continue;
         int offset = section_offset->second + (int)relative;
         out[sym.name] = offset;
-        if (sym.name[0] == '_') out[sym.name.substr(1)] = offset;
+        if (sym.name[0] == '_')
+            out[sym.name.substr(1)] = offset;
     }
     return out;
 }
 
-static std::vector<uint8_t> extract_cave_asm() {
+static std::vector<uint8_t> extract_cave_asm()
+{
     std::string td = tempdir("armcave-");
     auto src = std::filesystem::path(td) / "c.cpp";
     auto out = std::filesystem::path(td) / "c.o";
@@ -437,8 +525,15 @@ static std::vector<uint8_t> extract_cave_asm() {
         f << "#include \"armcave.h\"\n";
     }
     std::vector<std::string> args = {
-        clang_driver(true), "-target", "arm64-apple-macosx13.0", "-c", "-Oz",
-        "-fno-stack-protector", "-std=c++17", "-fno-exceptions", "-fno-rtti",
+        clang_driver(true),
+        "-target",
+        "arm64-apple-macosx13.0",
+        "-c",
+        "-Oz",
+        "-fno-stack-protector",
+        "-std=c++17",
+        "-fno-exceptions",
+        "-fno-rtti",
         "-fno-threadsafe-statics",
     };
     args.push_back("-I" + (project_root() / "include").u8string());
@@ -447,46 +542,61 @@ static std::vector<uint8_t> extract_cave_asm() {
     args.push_back(out.u8string());
     (void)run_clang(args);
     auto mo = open_macho(out.string());
-    if (!mo.bin) return {};
+    if (!mo.bin)
+        return {};
     auto *sec = mo.section("__caveasm");
-    if (!sec || sec->size < 16) return {};
+    if (!sec || sec->size < 16)
+        return {};
     return sec->content(mo.bin->data());
 }
 
-std::vector<uint8_t> extract_cave_asm_save() {
+std::vector<uint8_t> extract_cave_asm_save()
+{
     auto all = extract_cave_asm();
-    if (all.size() < 8) return {};
+    if (all.size() < 8)
+        return {};
     return std::vector<uint8_t>(all.begin(), all.begin() + 8);
 }
 
-std::vector<uint8_t> extract_cave_asm_restore() {
+std::vector<uint8_t> extract_cave_asm_restore()
+{
     auto all = extract_cave_asm();
-    if (all.size() < 12) return {};
+    if (all.size() < 12)
+        return {};
     return std::vector<uint8_t>(all.begin() + 8, all.begin() + 12);
 }
 
-std::vector<uint8_t> extract_cave_asm_ret() {
+std::vector<uint8_t> extract_cave_asm_ret()
+{
     auto all = extract_cave_asm();
-    if (all.size() < 16) return {};
+    if (all.size() < 16)
+        return {};
     return std::vector<uint8_t>(all.begin() + 12, all.begin() + 16);
 }
 
-AsmVaRange AsmVaRange::of(const BinaryImage &binary) {
+AsmVaRange AsmVaRange::of(const BinaryImage &binary)
+{
     AsmVaRange range;
     uint64_t lo = ~0ULL;
     uint64_t hi = 0;
-    for (auto &segment : binary.segments()) {
-        if (!segment.virtual_size) continue;
+    for (auto &segment : binary.segments())
+    {
+        if (!segment.virtual_size)
+            continue;
         lo = std::min(lo, segment.virtual_address);
         hi = std::max(hi, segment.virtual_address + segment.virtual_size);
     }
-    for (auto &section : binary.sections()) {
-        if (!section.size) continue;
+    for (auto &section : binary.sections())
+    {
+        if (!section.size)
+            continue;
         lo = std::min(lo, section.virtual_address);
         hi = std::max(hi, section.virtual_address + section.size);
     }
-    if (lo < 0x1000) lo = 0x1000;
-    if (lo > hi) {
+    if (lo < 0x1000)
+        lo = 0x1000;
+    if (lo > hi)
+    {
         lo = 0x100000000ULL;
         hi = ~0ULL;
     }
@@ -495,102 +605,104 @@ AsmVaRange AsmVaRange::of(const BinaryImage &binary) {
     return range;
 }
 
-static bool is_absolute_va(uint64_t target, const AsmVaRange &va_range) {
+static bool is_absolute_va(uint64_t target, const AsmVaRange &va_range)
+{
     return target >= va_range.min && target <= va_range.max;
 }
 
-static std::string normalize_absolute_branches(const std::string &source,
-                                               uint64_t address,
-                                               const AsmVaRange &va_range = {}) {
-    static const std::regex adrl_re(
-        R"(^((?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
-        std::regex::icase);
-    static const std::regex branch_re(
-        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)(b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
-        std::regex::icase);
-    static const std::regex adrp_re(
-        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
-        std::regex::icase);
-    static const std::regex compare_branch_re(
-        R"(^([ \t]*(?:(?:cbz|cbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*|(?:tbz|tbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*#[0-9]+[ \t]*,[ \t]*))(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)",
-        std::regex::icase);
+static std::string normalize_absolute_branches(const std::string &source, uint64_t address, const AsmVaRange &va_range = {})
+{
+    static const std::regex adrl_re(R"(^((?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)", std::regex::icase);
+    static const std::regex branch_re(R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)(b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)", std::regex::icase);
+    static const std::regex adrp_re(R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)", std::regex::icase);
+    static const std::regex compare_branch_re(R"(^([ \t]*(?:(?:cbz|cbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*|(?:tbz|tbnz)[ \t]+[wx][0-9]+[ \t]*,[ \t]*#[0-9]+[ \t]*,[ \t]*))(0[xX][0-9A-Fa-f]+|[0-9]+)(.*)$)", std::regex::icase);
     std::istringstream input(source);
     std::ostringstream output;
     std::string line;
     uint64_t offset = 0;
-    while (std::getline(input, line)) {
+    while (std::getline(input, line))
+    {
         std::smatch match;
-        if (std::regex_match(line, match, adrl_re)) {
-            // Darwin's AArch64 assembler neither accepts the GNU/LLVM adrl
-            // pseudo-instruction nor keeps text after a ';' on a line, so the
-            // ADRP/ADD pair must be emitted as two physical lines.  The label
-            // (if any) stays on the first line only.
+        if (std::regex_match(line, match, adrl_re))
+        {
             output << match[1].str() << match[2].str() << "adrp "
                    << match[3].str() << ", " << match[4].str() << "@PAGE\n"
                    << match[2].str() << "add " << match[3].str() << ", "
                    << match[3].str() << ", " << match[4].str() << "@PAGEOFF"
                    << match[5].str();
-            if (!input.eof()) output << '\n';
+            if (!input.eof())
+                output << '\n';
             offset += 8;
             continue;
-        } else if (std::regex_match(line, match, branch_re)) {
+        }
+        else if (std::regex_match(line, match, branch_re))
+        {
             uint64_t target = 0;
-            try {
+            try
+            {
                 target = std::stoull(match[3].str(), nullptr, 0);
-            } catch (...) {
+            }
+            catch (...)
+            {
                 target = 0;
             }
             std::string mnemonic = match[2].str();
             for (char &c : mnemonic)
                 c = (char)std::tolower((unsigned char)c);
-            if ((target >= 0x100000000ULL || is_absolute_va(target, va_range)) &&
-                !address && (mnemonic == "b" || mnemonic == "bl")) {
-                // Keep the target symbolic until the final plugin VA is known.
-                // Encoding the absolute VA as MOVZ/MOVK is not ASLR-safe.
+            if ((target >= 0x100000000ULL || is_absolute_va(target, va_range)) && !address && (mnemonic == "b" || mnemonic == "bl"))
+            {
                 std::ostringstream symbol;
                 symbol << "armcave_absolute_" << std::hex << target;
-                line = match[1].str() + match[2].str() + " " +
-                       symbol.str() + match[4].str();
-            } else if (target >= 0x100000000ULL || is_absolute_va(target, va_range)) {
+                line = match[1].str() + match[2].str() + " " + symbol.str() + match[4].str();
+            }
+            else if (target >= 0x100000000ULL || is_absolute_va(target, va_range))
+            {
                 int64_t pc = (int64_t)(address + offset);
                 int64_t target_signed = (int64_t)target;
                 int64_t relative = target_signed - pc;
-                line = match[1].str() + match[2].str() + " " +
-                       std::to_string(relative) + match[4].str();
+                line = match[1].str() + match[2].str() + " " + std::to_string(relative) + match[4].str();
             }
-        } else if (std::regex_match(line, match, adrp_re)) {
+        }
+        else if (std::regex_match(line, match, adrp_re))
+        {
             uint64_t target = 0;
-            try {
+            try
+            {
                 target = std::stoull(match[2].str(), nullptr, 0);
-            } catch (...) {
+            }
+            catch (...)
+            {
                 target = 0;
             }
-            if (target >= 0x100000000ULL || is_absolute_va(target, va_range)) {
-                if (!address) {
-                    // new_asm_func bodies assemble at address zero because the
-                    // final plugin VA is unknown, so keep the page target
-                    // symbolic (like absolute branches) and let the PAGE21
-                    // relocation resolve it after layout.
+            if (target >= 0x100000000ULL || is_absolute_va(target, va_range))
+            {
+                if (!address)
+                {
                     std::ostringstream symbol;
                     symbol << "armcave_absolute_" << std::hex << target;
-                    line = match[1].str() + symbol.str() + "@PAGE" +
-                           match[3].str();
-                } else {
+                    line = match[1].str() + symbol.str() + "@PAGE" + match[3].str();
+                }
+                else
+                {
                     uint64_t pc = address + offset;
-                    int64_t relative = (int64_t)(target & ~0xfffULL) -
-                                        (int64_t)(pc & ~0xfffULL);
-                    line = match[1].str() + std::to_string(relative) +
-                           match[3].str();
+                    int64_t relative = (int64_t)(target & ~0xfffULL) - (int64_t)(pc & ~0xfffULL);
+                    line = match[1].str() + std::to_string(relative) + match[3].str();
                 }
             }
-        } else if (std::regex_match(line, match, compare_branch_re)) {
+        }
+        else if (std::regex_match(line, match, compare_branch_re))
+        {
             uint64_t target = 0;
-            try {
+            try
+            {
                 target = std::stoull(match[2].str(), nullptr, 0);
-            } catch (...) {
+            }
+            catch (...)
+            {
                 target = 0;
             }
-            if (target >= 0x100000000ULL || is_absolute_va(target, va_range)) {
+            if (target >= 0x100000000ULL || is_absolute_va(target, va_range))
+            {
                 int64_t pc = (int64_t)(address + offset);
                 int64_t target_signed = (int64_t)target;
                 int64_t relative = target_signed - pc;
@@ -598,17 +710,18 @@ static std::string normalize_absolute_branches(const std::string &source,
             }
         }
         output << line;
-        if (!input.eof()) output << '\n';
-
+        if (!input.eof())
+            output << '\n';
         std::string trimmed = line;
         trimmed.erase(0, trimmed.find_first_not_of(" \t"));
-        if (!trimmed.empty() && trimmed[0] != '.') {
+        if (!trimmed.empty() && trimmed[0] != '.')
+        {
             std::size_t start = 0;
-            while (start < trimmed.size()) {
+            while (start < trimmed.size())
+            {
                 std::size_t end = trimmed.find(';', start);
                 std::string instruction = trimmed.substr(start, end - start);
-                while (!instruction.empty() &&
-                       (instruction.back() == ' ' || instruction.back() == '\t'))
+                while (!instruction.empty() && (instruction.back() == ' ' || instruction.back() == '\t'))
                     instruction.pop_back();
                 if (!instruction.empty() && instruction.back() != ':')
                     offset += 4;
@@ -621,77 +734,64 @@ static std::string normalize_absolute_branches(const std::string &source,
     return output.str();
 }
 
-static std::string normalize_registered_labels(
-    std::string source, uint64_t address,
-    const std::map<std::string, uint64_t> &label_targets) {
+static std::string normalize_registered_labels(std::string source, uint64_t address, const std::map<std::string, uint64_t> &label_targets)
+{
     if (!address || label_targets.empty())
         return source;
-
-    static const std::regex branch_re(
-        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?(?:b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
-        std::regex::icase);
-    static const std::regex adrl_re(
-        R"(^((?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?[ \t]*([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
-        std::regex::icase);
-    static const std::regex adrp_re(
-        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
-        std::regex::icase);
-    static const std::regex add_re(
-        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?add[ \t]+[xw][0-9]+[ \t]*,[ \t]*[xw][0-9]+[ \t]*,)[ \t]*#?[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)",
-        std::regex::icase);
-    static const std::regex load_re(
-        R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?(?:ldr|str)[ \t]+[xw][0-9]+[ \t]*,[ \t]*\[[ \t]*x[0-9]+[ \t]*,)[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)[ \t]*\](.*)$)",
-        std::regex::icase);
+    static const std::regex branch_re(R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?(?:b(?:\.[A-Za-z0-9]+)?|bl)[ \t]+)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)", std::regex::icase);
+    static const std::regex adrl_re(R"(^((?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?)([ \t]*)adrl[ \t]+(x[0-9]+)[ \t]*,[ \t]*#?[ \t]*([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)", std::regex::icase);
+    static const std::regex adrp_re(R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?adrp[ \t]+x[0-9]+[ \t]*,[ \t]*#?[ \t]*)([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)", std::regex::icase);
+    static const std::regex add_re(R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?add[ \t]+[xw][0-9]+[ \t]*,[ \t]*[xw][0-9]+[ \t]*,)[ \t]*#?[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)(.*)$)", std::regex::icase);
+    static const std::regex load_re(R"(^([ \t]*(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)?(?:ldr|str)[ \t]+[xw][0-9]+[ \t]*,[ \t]*\[[ \t]*x[0-9]+[ \t]*,)[ \t]*(?::lo12:)?([A-Za-z_.$][A-Za-z0-9_.$]*)[ \t]*\](.*)$)", std::regex::icase);
     std::istringstream input(normalize_asm_text(source));
     std::ostringstream output;
     std::string line;
-    while (std::getline(input, line)) {
+    while (std::getline(input, line))
+    {
         std::smatch match;
-        if (std::regex_match(line, match, branch_re)) {
+        if (std::regex_match(line, match, branch_re))
+        {
             auto target = label_targets.find(match[2].str());
             if (target != label_targets.end())
                 line = match[1].str() + std::to_string(target->second) + match[3].str();
-        } else if (std::regex_match(line, match, adrl_re)) {
+        }
+        else if (std::regex_match(line, match, adrl_re))
+        {
             auto target = label_targets.find(match[4].str());
-            if (target != label_targets.end()) {
-                // Keep the label only on the first emitted line; repeating it
-                // would define the same label twice in the assembly source.
-                line = match[1].str() + match[2].str() + "adrp " + match[3].str() +
-                       ", " + std::to_string(target->second) + "\n" +
-                       match[2].str() + "add " + match[3].str() + ", " +
-                       match[3].str() + ", #" +
-                       std::to_string(target->second & 0xfffU) + match[5].str();
+            if (target != label_targets.end())
+            {
+                line = match[1].str() + match[2].str() + "adrp " + match[3].str() + ", " + std::to_string(target->second) + "\n" + match[2].str() + "add " + match[3].str() + ", " + match[3].str() + ", #" + std::to_string(target->second & 0xfffU) + match[5].str();
             }
-        } else if (std::regex_match(line, match, adrp_re)) {
+        }
+        else if (std::regex_match(line, match, adrp_re))
+        {
             auto target = label_targets.find(match[2].str());
             if (target != label_targets.end())
                 line = match[1].str() + std::to_string(target->second) + match[3].str();
-        } else if (std::regex_match(line, match, add_re)) {
+        }
+        else if (std::regex_match(line, match, add_re))
+        {
             auto target = label_targets.find(match[2].str());
             if (target != label_targets.end())
-                line = match[1].str() + " #" +
-                       std::to_string(target->second & 0xfffU) + match[3].str();
-        } else if (std::regex_match(line, match, load_re)) {
+                line = match[1].str() + " #" + std::to_string(target->second & 0xfffU) + match[3].str();
+        }
+        else if (std::regex_match(line, match, load_re))
+        {
             auto target = label_targets.find(match[2].str());
             if (target != label_targets.end())
-                line = match[1].str() + " #" +
-                       std::to_string(target->second & 0xfffU) + "]" + match[3].str();
+                line = match[1].str() + " #" + std::to_string(target->second & 0xfffU) + "]" + match[3].str();
         }
         output << line;
-        if (!input.eof()) output << '\n';
+        if (!input.eof())
+            output << '\n';
     }
     return output.str();
 }
 
-static MachO assemble_aarch64_object(
-    const std::string &source, uint64_t address,
-    const std::map<std::string, uint64_t> &symbol_targets,
-    const AsmVaRange &va_range = {});
+static MachO assemble_aarch64_object(const std::string &source, uint64_t address, const std::map<std::string, uint64_t> &symbol_targets, const AsmVaRange &va_range = {});
 
-std::vector<uint8_t> assemble_aarch64(
-    const std::string &source, uint64_t address,
-    const std::map<std::string, uint64_t> &symbol_targets,
-    const AsmVaRange &va_range) {
+std::vector<uint8_t> assemble_aarch64(const std::string &source, uint64_t address, const std::map<std::string, uint64_t> &symbol_targets, const AsmVaRange &va_range)
+{
     auto mo = assemble_aarch64_object(source, address, symbol_targets, va_range);
     auto *sec = mo.section("__text");
     if (!sec)
@@ -704,33 +804,35 @@ std::vector<uint8_t> assemble_aarch64(
     return payload;
 }
 
-static MachO assemble_aarch64_object(
-    const std::string &source, uint64_t address,
-    const std::map<std::string, uint64_t> &symbol_targets,
-    const AsmVaRange &va_range) {
+static MachO assemble_aarch64_object(const std::string &source, uint64_t address, const std::map<std::string, uint64_t> &symbol_targets, const AsmVaRange &va_range)
+{
     std::string td = tempdir("armcave-asm-");
     auto src = std::filesystem::path(td) / "a.s";
     auto out = std::filesystem::path(td) / "a.o";
     auto error = std::filesystem::path(td) / "a.err";
     {
         std::ofstream f(src);
-        auto normalized = normalize_registered_labels(
-            normalize_asm_text(source), address, symbol_targets);
-        f << ".text\n" << normalize_absolute_branches(normalized, address, va_range) << "\n";
+        auto normalized = normalize_registered_labels(normalize_asm_text(source), address, symbol_targets);
+        f << ".text\n"
+          << normalize_absolute_branches(normalized, address, va_range) << "\n";
     }
     std::vector<std::string> args = {
-        clang_driver(false), "-target", "arm64-apple-macosx13.0", "-c",
+        clang_driver(false),
+        "-target",
+        "arm64-apple-macosx13.0",
+        "-c",
     };
     args.push_back(src.u8string());
     args.push_back("-o");
     args.push_back(out.u8string());
-    if (run_clang(args, &error) != 0) {
+    if (run_clang(args, &error) != 0)
+    {
         std::ifstream input(error);
-        std::string detail((std::istreambuf_iterator<char>(input)),
-                           std::istreambuf_iterator<char>());
+        std::string detail((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
         while (!detail.empty() && (detail.back() == '\n' || detail.back() == '\r'))
             detail.pop_back();
-        if (detail.empty()) detail = "unknown assembler error";
+        if (detail.empty())
+            detail = "unknown assembler error";
         throw std::runtime_error("AArch64 assembler failed: " + detail);
     }
     auto mo = open_macho(out.string());
@@ -739,19 +841,21 @@ static MachO assemble_aarch64_object(
     return mo;
 }
 
-static void append_asm_text_relocations(PluginBlob &blob, BinaryImage *image,
-                                        BinarySection *text_sec, int base,
-                                        bool from_new_asm_func = false) {
+static void append_asm_text_relocations(PluginBlob &blob, BinaryImage *image, BinarySection *text_sec, int base, bool from_new_asm_func = false)
+{
     bool has_addend = false;
     int64_t pending_addend = 0;
     uint64_t pending_address = 0;
-    for (auto &reloc : text_sec->relocations) {
+    for (auto &reloc : text_sec->relocations)
+    {
         uint64_t address = reloc.address;
         if (address >= text_sec->size)
             throw std::runtime_error("text relocation is outside __text");
-        if (reloc.type == 10) {
+        if (reloc.type == 10)
+        {
             int32_t raw = (int32_t)(reloc.symbol_index & 0x00ffffff);
-            if (raw & 0x00800000) raw |= (int32_t)0xff000000;
+            if (raw & 0x00800000)
+                raw |= (int32_t)0xff000000;
             pending_addend = raw;
             pending_address = address;
             has_addend = true;
@@ -761,45 +865,51 @@ static void append_asm_text_relocations(PluginBlob &blob, BinaryImage *image,
         r.type = reloc.type;
         r.address = base + (int)address;
         r.from_new_asm_func = from_new_asm_func;
-        if (has_addend) {
+        if (has_addend)
+        {
             if (pending_address != address)
                 throw std::runtime_error("ARM64_RELOC_ADDEND is not paired");
             r.addend = pending_addend;
             has_addend = false;
         }
         const BinarySymbol *sym = reloc.external ? image->symbol(reloc.symbol_index) : nullptr;
-        if (sym) {
+        if (sym)
+        {
             r.symbol_name = sym->name;
             std::string normalized_name = r.symbol_name;
             if (!normalized_name.empty() && normalized_name[0] == '_')
                 normalized_name.erase(0, 1);
             static const std::string absolute_prefix = "armcave_absolute_";
-            if (from_new_asm_func &&
-                normalized_name.compare(0, absolute_prefix.size(), absolute_prefix) == 0) {
+            if (from_new_asm_func && normalized_name.compare(0, absolute_prefix.size(), absolute_prefix) == 0)
+            {
                 auto value = normalized_name.substr(absolute_prefix.size());
                 if (value.empty())
                     throw std::runtime_error("new_asm_func has an empty absolute branch target");
                 char *end = nullptr;
                 uint64_t target = strtoull(value.c_str(), &end, 16);
                 if (!end || *end != '\0')
-                    throw std::runtime_error("new_asm_func has an invalid absolute branch target: " +
-                                             value);
+                    throw std::runtime_error("new_asm_func has an invalid absolute branch target: " + value);
                 r.has_absolute_target = true;
                 r.absolute_target = target;
             }
             r.symbol_value = sym->value;
-            if (!sym->undefined()) {
-                for (auto &sec : image->sections()) {
+            if (!sym->undefined())
+            {
+                for (auto &sec : image->sections())
+                {
                     uint64_t start = sec.virtual_address;
                     uint64_t end = start + sec.size;
-                    if (start <= r.symbol_value && r.symbol_value < end) {
+                    if (start <= r.symbol_value && r.symbol_value < end)
+                    {
                         r.symbol_section = sec.name;
                         r.symbol_value -= start;
                         break;
                     }
                 }
             }
-        } else if (reloc.symbol_index > 0 && reloc.symbol_index <= image->sections().size()) {
+        }
+        else if (reloc.symbol_index > 0 && reloc.symbol_index <= image->sections().size())
+        {
             auto &sec = image->sections()[reloc.symbol_index - 1];
             r.symbol_section = sec.name;
         }
@@ -809,32 +919,38 @@ static void append_asm_text_relocations(PluginBlob &blob, BinaryImage *image,
         throw std::runtime_error("orphan ARM64_RELOC_ADDEND");
 }
 
-PluginBlob compile_plugin(const std::filesystem::path &path,
-                          const std::filesystem::path *target_binary) {
+PluginBlob compile_plugin(const std::filesystem::path &path, const std::filesystem::path *target_binary)
+{
     PluginBlob blob;
     std::string td = tempdir("armcave-");
     auto out = std::filesystem::path(td) / (path.stem().string() + ".o");
     if (path.extension() != ".cpp")
         throw std::runtime_error("plugin must be a .cpp file: " + path.string());
-
     std::vector<std::string> args = {
-        clang_driver(true), "-target", "arm64-apple-macosx13.0", "-c", "-Oz",
-        "-fno-stack-protector", "-std=c++17", "-fno-exceptions", "-fno-rtti",
+        clang_driver(true),
+        "-target",
+        "arm64-apple-macosx13.0",
+        "-c",
+        "-Oz",
+        "-fno-stack-protector",
+        "-std=c++17",
+        "-fno-exceptions",
+        "-fno-rtti",
         "-fno-threadsafe-statics",
     };
     args.push_back("-I" + (project_root() / "include").u8string());
     bool target_is_elf = false;
-    if (target_binary) {
+    if (target_binary)
+    {
         std::ifstream target(*target_binary, std::ios::binary);
         unsigned char magic[4] = {};
         target.read(reinterpret_cast<char *>(magic), sizeof(magic));
-        target_is_elf = target.gcount() == static_cast<std::streamsize>(sizeof(magic)) &&
-                        magic[0] == 0x7f && magic[1] == 'E' &&
-                        magic[2] == 'L' && magic[3] == 'F';
+        target_is_elf = target.gcount() == static_cast<std::streamsize>(sizeof(magic)) && magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
     }
     if (target_is_elf)
         args.push_back("-DARMCAVE_ELF=1");
-    if (!target_binary) {
+    if (!target_binary)
+    {
         args.push_back("-ffreestanding");
         args.push_back("-fno-builtin");
     }
@@ -842,107 +958,94 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
     args.push_back("-o");
     args.push_back(out.u8string());
     int rc = run_clang(args);
-    if (rc != 0) {
-        // 失败重试一次并把 clang 的错误信息放出来，便于定位
+    if (rc != 0)
+    {
         rc = run_clang(args);
         if (rc != 0)
             throw std::runtime_error("clang++ failed for " + path.string());
     }
-
     auto mo = open_macho(out.string());
     if (!mo.bin)
         throw std::runtime_error("failed to parse object: " + path.string());
-
     auto *text_sec = mo.section("__text");
     if (!text_sec)
         throw std::runtime_error("missing __text: " + path.string());
-
     {
         blob.text = text_sec->content(mo.bin->data());
     }
-
     std::vector<uint8_t> extra;
-    for (auto &sec : mo.bin->sections()) {
+    for (auto &sec : mo.bin->sections())
+    {
         auto name = sec.name;
-        if (name == "__text" || name == "__compact_unwind" ||
-            name == "__eh_frame" || name == "__armhook" || name == "__armkeep")
+        if (name == "__text" || name == "__compact_unwind" || name == "__eh_frame" || name == "__armhook" || name == "__armkeep")
             continue;
         if (name == "__caveasm")
             continue;
-        if (name.size() >= 2 && name[0] == '_' && name[1] == '_') {
+        if (name.size() >= 2 && name[0] == '_' && name[1] == '_')
+        {
             if (sec.segment_name != "__TEXT")
                 blob.has_writable_extra = true;
-            while (extra.size() % 8 != 0) extra.push_back(0);
+            while (extra.size() % 8 != 0)
+                extra.push_back(0);
             blob.section_offsets[name] = (int)extra.size();
             auto content = sec.content(mo.bin->data());
             extra.insert(extra.end(), content.begin(), content.end());
         }
     }
-    while (extra.size() % 16 != 0) extra.push_back(0);
+    while (extra.size() % 16 != 0)
+        extra.push_back(0);
     blob.extra = extra;
     blob.data_symbol_offsets = data_symbol_offsets(mo.bin.get(), blob.section_offsets);
-
     append_asm_text_relocations(blob, mo.bin.get(), text_sec, 0);
-
     auto *meta_sec = mo.section("__armhook");
     if (meta_sec)
         blob.declarations = parse_meta(meta_sec->content(mo.bin->data()));
-
     blob.symbol_offsets = symbol_offsets(mo.bin.get(), text_sec);
     blob.default_segment = init_segment(path);
-
-    // Assembly functions are kept separate from C++ handlers so local labels
-    // can be resolved by one assembler invocation per function.
-    for (auto &action : blob.declarations) {
-        if (action.kind != "new_asm_func") continue;
+    for (auto &action : blob.declarations)
+    {
+        if (action.kind != "new_asm_func")
+            continue;
         if (action.function_name.empty())
-            throw std::runtime_error("new_asm_func is missing its name in " +
-                                     path.string());
+            throw std::runtime_error("new_asm_func is missing its name in " + path.string());
         if (action.data.empty())
-            throw std::runtime_error("new_asm_func requires an assembly body in " +
-                                     path.string());
+            throw std::runtime_error("new_asm_func requires an assembly body in " + path.string());
         auto lines = parse_asm_lines(action.data);
         if (lines.empty())
             throw std::runtime_error("new_asm_func has an empty body in " + path.string());
         std::string source = split_asm_statements(lines);
         AsmVaRange va_range;
-        if (target_is_elf && target_binary) {
+        if (target_is_elf && target_binary)
+        {
             auto image = BinaryImage::parse(*target_binary);
-            if (image) va_range = AsmVaRange::of(*image);
+            if (image)
+                va_range = AsmVaRange::of(*image);
         }
         auto asm_mo = assemble_aarch64_object(source, 0, {}, va_range);
         auto *asm_text = asm_mo.section("__text");
         auto bytes = asm_text->content(asm_mo.bin->data());
-        while (blob.text.size() % 4 != 0) blob.text.push_back(0);
+        while (blob.text.size() % 4 != 0)
+            blob.text.push_back(0);
         action.asm_offset = (int)blob.text.size();
-        append_asm_text_relocations(blob, asm_mo.bin.get(), asm_text, action.asm_offset,
-                                    true);
+        append_asm_text_relocations(blob, asm_mo.bin.get(), asm_text, action.asm_offset, true);
         blob.text.insert(blob.text.end(), bytes.begin(), bytes.end());
-        if (!blob.function_offsets.emplace(action.function_name,
-                                           action.asm_offset).second)
+        if (!blob.function_offsets.emplace(action.function_name, action.asm_offset).second)
             throw std::runtime_error("duplicate new function name in " + path.string());
     }
-
-    // new_asm_func bodies are assembled as separate objects. References to
-    // data defined by the C++ plugin therefore arrive as undefined symbols in
-    // the assembly object and need to be rebound to the plugin data section.
-    for (auto &reloc : blob.relocs) {
-        if (!reloc.from_new_asm_func || reloc.symbol_name.empty() ||
-            (reloc.type != 0 && reloc.type != 3 && reloc.type != 4 &&
-             reloc.type != 5 && reloc.type != 6 && reloc.type != 7) ||
-            !reloc.symbol_section.empty())
+    for (auto &reloc : blob.relocs)
+    {
+        if (!reloc.from_new_asm_func || reloc.symbol_name.empty() || (reloc.type != 0 && reloc.type != 3 && reloc.type != 4 && reloc.type != 5 && reloc.type != 6 && reloc.type != 7) || !reloc.symbol_section.empty())
             continue;
-
         const BinarySymbol *data_symbol = nullptr;
-        for (const auto &symbol : mo.bin->symbols()) {
-            if (symbol.undefined()) continue;
+        for (const auto &symbol : mo.bin->symbols())
+        {
+            if (symbol.undefined())
+                continue;
             bool same_name = symbol.name == reloc.symbol_name;
-            bool symbol_has_prefix = symbol.name.size() == reloc.symbol_name.size() + 1 &&
-                symbol.name[0] == '_' && symbol.name.substr(1) == reloc.symbol_name;
-            bool reloc_has_prefix = reloc.symbol_name.size() == symbol.name.size() + 1 &&
-                reloc.symbol_name[0] == '_' &&
-                reloc.symbol_name.substr(1) == symbol.name;
-            if (same_name || symbol_has_prefix || reloc_has_prefix) {
+            bool symbol_has_prefix = symbol.name.size() == reloc.symbol_name.size() + 1 && symbol.name[0] == '_' && symbol.name.substr(1) == reloc.symbol_name;
+            bool reloc_has_prefix = reloc.symbol_name.size() == symbol.name.size() + 1 && reloc.symbol_name[0] == '_' && reloc.symbol_name.substr(1) == symbol.name;
+            if (same_name || symbol_has_prefix || reloc_has_prefix)
+            {
                 data_symbol = &symbol;
                 break;
             }
@@ -950,40 +1053,36 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         if (!data_symbol || data_symbol->section_index == 0 ||
             data_symbol->section_index > mo.bin->sections().size())
             continue;
-
         const auto &section = mo.bin->sections()[data_symbol->section_index - 1];
-        if (section.name == "__text" || section.segment_name == "__TEXT" ||
-            section.virtual_address > data_symbol->value ||
-            data_symbol->value >= section.virtual_address + section.size)
+        if (section.name == "__text" || section.segment_name == "__TEXT" || section.virtual_address > data_symbol->value || data_symbol->value >= section.virtual_address + section.size)
             continue;
         reloc.symbol_section = section.name;
         reloc.symbol_value = data_symbol->value - section.virtual_address;
     }
-
-    for (const auto &action : blob.declarations) {
-        if (action.kind != "new_cpp_func") continue;
+    for (const auto &action : blob.declarations)
+    {
+        if (action.kind != "new_cpp_func")
+            continue;
         if (action.handler.empty())
             throw std::runtime_error("new_cpp_func is missing its handler in " + path.string());
-        std::string function_name = action.function_name.empty()
-            ? action.handler : action.function_name;
+        std::string function_name = action.function_name.empty() ? action.handler : action.function_name;
         auto it = blob.symbol_offsets.find(action.handler);
-        if (it == blob.symbol_offsets.end()) {
+        if (it == blob.symbol_offsets.end())
+        {
             std::string us = "_" + action.handler;
             it = blob.symbol_offsets.find(us);
         }
         if (it == blob.symbol_offsets.end())
-            throw std::runtime_error("handler symbol is not local to plugin: " +
-                                     action.handler);
+            throw std::runtime_error("handler symbol is not local to plugin: " + action.handler);
         if (!blob.function_offsets.emplace(function_name, it->second).second)
             throw std::runtime_error("duplicate new function name in " + path.string());
     }
-
-    // Resolve references emitted by new_asm_func to registered C++ handlers.
-    // They are initially undefined Mach-O branch relocations because the
-    // assembler runs before the plugin segment receives its final VA.
-    for (auto &reloc : blob.relocs) {
-        if (!reloc.from_new_asm_func || reloc.type != 2) continue;
-        if (reloc.has_absolute_target) continue;
+    for (auto &reloc : blob.relocs)
+    {
+        if (!reloc.from_new_asm_func || reloc.type != 2)
+            continue;
+        if (reloc.has_absolute_target)
+            continue;
         if (reloc.symbol_name.empty())
             throw std::runtime_error("new_asm_func contains a branch with no symbol");
         auto it = blob.function_offsets.find(reloc.symbol_name);
@@ -992,23 +1091,23 @@ PluginBlob compile_plugin(const std::filesystem::path &path,
         if (it == blob.function_offsets.end() && reloc.symbol_name[0] != '_')
             it = blob.function_offsets.find("_" + reloc.symbol_name);
         if (it == blob.function_offsets.end())
-            throw std::runtime_error("new_asm_func branch references unregistered function: " +
-                                     reloc.symbol_name);
+            throw std::runtime_error("new_asm_func branch references unregistered function: " + reloc.symbol_name);
         reloc.symbol_section = "__text";
         reloc.symbol_value = (uint64_t)it->second;
     }
-
     return blob;
 }
 
-int PluginBlob::total_bytes() const {
+int PluginBlob::total_bytes() const
+{
     if (extra.empty())
         return max_text_bytes();
     int aligned = (max_text_bytes() + 15) & ~15;
     return aligned + (int)extra.size();
 }
 
-int PluginBlob::max_text_bytes() const {
+int PluginBlob::max_text_bytes() const
+{
     int veneers = 0;
     for (const auto &reloc : relocs)
         if (reloc.type == 2)
@@ -1016,44 +1115,49 @@ int PluginBlob::max_text_bytes() const {
     return (int)text.size() + veneers;
 }
 
-PluginBlob PluginBlob::for_action(const HookAction &action) const {
+PluginBlob PluginBlob::for_action(const HookAction &action) const
+{
     PluginBlob b = *this;
-    if (action.kind == "new_asm_func") {
+    if (action.kind == "new_asm_func")
+    {
         b.register_args.clear();
         b.entry_offset = action.asm_offset;
         return b;
     }
     b.register_args = action.register_args;
     auto it = symbol_offsets.find(action.handler);
-    if (it == symbol_offsets.end()) {
+    if (it == symbol_offsets.end())
+    {
         std::string us = "_" + action.handler;
         it = symbol_offsets.find(us);
     }
     if (it == symbol_offsets.end())
-        throw std::runtime_error("handler symbol is not local to plugin: " +
-                                 action.handler);
+        throw std::runtime_error("handler symbol is not local to plugin: " + action.handler);
     b.entry_offset = it->second;
     return b;
 }
 
-std::vector<uint8_t> PluginBlob::build(uint64_t text_va, uint64_t data_va,
-                                        const std::filesystem::path *target_binary) const {
-    if (!target_binary || relocs.empty()) {
+std::vector<uint8_t> PluginBlob::build(uint64_t text_va, uint64_t data_va, const std::filesystem::path *target_binary) const
+{
+    if (!target_binary || relocs.empty())
+    {
         std::vector<uint8_t> out = text;
         out.resize((size_t)max_text_bytes(), 0);
-        if (!extra.empty()) {
-            while (out.size() % 16 != 0) out.push_back(0);
+        if (!extra.empty())
+        {
+            while (out.size() % 16 != 0)
+                out.push_back(0);
             out.insert(out.end(), extra.begin(), extra.end());
         }
         return out;
     }
-    auto [new_text, new_extra] = resolve_plugin_relocs(
-        text, extra, relocs, section_offsets,
-        *target_binary, text_va, data_va);
+    auto [new_text, new_extra] = resolve_plugin_relocs(text, extra, relocs, section_offsets, *target_binary, text_va, data_va);
     new_text.resize((size_t)max_text_bytes(), 0);
     std::vector<uint8_t> out = new_text;
-    if (!new_extra.empty()) {
-        while (out.size() % 16 != 0) out.push_back(0);
+    if (!new_extra.empty())
+    {
+        while (out.size() % 16 != 0)
+            out.push_back(0);
         out.insert(out.end(), new_extra.begin(), new_extra.end());
     }
     return out;

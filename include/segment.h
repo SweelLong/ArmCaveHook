@@ -16,8 +16,6 @@ struct SegmentPlan
 std::vector<uint8_t> read_file(const std::filesystem::path &path);
 void write_file(const std::filesystem::path &path, const std::vector<uint8_t> &data);
 
-// Partial access: patching a target image must not rewrite the whole file,
-// which is tens of megabytes for an Arcaea binary.
 std::vector<uint8_t> read_range(const std::filesystem::path &path,
                                 int64_t offset, int64_t length);
 void write_range(const std::filesystem::path &path, int64_t offset,
