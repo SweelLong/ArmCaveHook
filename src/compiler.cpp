@@ -939,6 +939,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path, const std::filesyst
         "-fno-threadsafe-statics",
     };
     args.push_back("-I" + (project_root() / "include").u8string());
+    args.push_back("-I" + path.parent_path().u8string());
     bool target_is_elf = false;
     if (target_binary)
     {

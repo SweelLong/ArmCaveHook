@@ -52,7 +52,7 @@ struct PluginSpec
     }
 };
 
-inline PluginSpec load_plugin(const std::filesystem::path &path)
+inline PluginSpec load_plugin(const std::filesystem::path &path, const std::string &name = std::string())
 {
-    return PluginSpec{path, path.stem().string(), {}};
+    return PluginSpec{path, name.empty() ? path.stem().string() : name, {}};
 }

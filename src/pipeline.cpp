@@ -796,6 +796,94 @@ static bool standard_pipeline(const std::filesystem::path &input_path, const std
     return true;
 }
 
+struct DiscoveredPlugin
+{
+    std::string name;
+    std::filesystem::path path;
+};
+
+static bool plugin_dir_main(const std::filesystem::path &dir, std::filesystem::path &out)
+{
+    std::vector<std::filesystem::path> sources;
+    for (const auto &entry : std::filesystem::directory_iterator(dir))
+        if (entry.is_regular_file() && entry.path().extension() == ".cpp")
+            sources.push_back(entry.path());
+    std::sort(sources.begin(), sources.end());
+    if (sources.empty())
+        return false;
+    std::string stem = dir.filename().string();
+    for (auto &source : sources)
+        if (source.stem() == stem)
+        {
+            out = source;
+            return true;
+        }
+    for (auto &source : sources)
+        if (source.filename() == "main.cpp")
+        {
+            out = source;
+            return true;
+        }
+    out = sources.front();
+    return true;
+}
+
+static std::vector<DiscoveredPlugin> discover_plugins(const std::filesystem::path &plugins_dir)
+{
+    std::vector<DiscoveredPlugin> found;
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(plugins_dir, ec))
+    {
+        if (plugins_dir.extension() == ".cpp")
+            found.push_back({plugins_dir.stem().string(), plugins_dir});
+        return found;
+    }
+    if (!std::filesystem::is_directory(plugins_dir, ec))
+        return found;
+    for (auto &entry : std::filesystem::directory_iterator(plugins_dir))
+    {
+        if (entry.is_directory())
+        {
+            std::filesystem::path main;
+            if (!plugin_dir_main(entry.path(), main))
+                continue;
+            found.push_back({entry.path().filename().string(), main});
+        }
+        else if (entry.is_regular_file() && entry.path().extension() == ".cpp")
+            found.push_back({entry.path().stem().string(), entry.path()});
+    }
+    std::sort(found.begin(), found.end(), [](const DiscoveredPlugin &a, const DiscoveredPlugin &b)
+              { return a.name < b.name; });
+    for (size_t i = 1; i < found.size(); ++i)
+        if (found[i].name == found[i - 1].name)
+            throw std::runtime_error("duplicate plugin name: " + found[i].name + " (a file and a directory share it)");
+    return found;
+}
+
+static void stage_plugin_sources(const std::filesystem::path &source, const std::filesystem::path &target_dir)
+{
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(source))
+    {
+        std::filesystem::copy_file(source, target_dir / source.filename(), std::filesystem::copy_options::overwrite_existing, ec);
+        return;
+    }
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(source, ec))
+    {
+        auto ext = entry.path().extension();
+        if (entry.is_directory())
+        {
+            std::filesystem::create_directories(target_dir / std::filesystem::relative(entry.path(), source, ec), ec);
+            continue;
+        }
+        if (!entry.is_regular_file() || (ext != ".cpp" && ext != ".cc" && ext != ".c" && ext != ".h" && ext != ".hpp" && ext != ".hh" && ext != ".inc"))
+            continue;
+        auto destination = target_dir / std::filesystem::relative(entry.path(), source, ec);
+        std::filesystem::create_directories(destination.parent_path(), ec);
+        std::filesystem::copy_file(entry.path(), destination, std::filesystem::copy_options::overwrite_existing, ec);
+    }
+}
+
 void run_pipeline(const std::filesystem::path &input_path, const std::filesystem::path &output_path, const std::filesystem::path &plugins_dir, const std::vector<std::string> *plugin_names, const std::string *whitelist, const std::string *blacklist)
 {
     if (!std::filesystem::exists(input_path))
@@ -803,16 +891,12 @@ void run_pipeline(const std::filesystem::path &input_path, const std::filesystem
     std::vector<PluginSpec> plugins;
     if (std::filesystem::exists(plugins_dir))
     {
+        std::vector<DiscoveredPlugin> discovered = discover_plugins(plugins_dir);
         std::vector<std::string> names;
+        for (auto &plugin : discovered)
+            names.push_back(plugin.name);
         if (plugin_names)
             names = *plugin_names;
-        else
-        {
-            for (auto &entry : std::filesystem::directory_iterator(plugins_dir))
-                if (entry.path().extension() == ".cpp")
-                    names.push_back(entry.path().filename().string());
-            std::sort(names.begin(), names.end());
-        }
         std::set<std::string> filtered, excluded;
         if (whitelist)
         {
@@ -856,9 +940,13 @@ void run_pipeline(const std::filesystem::path &input_path, const std::filesystem
                 continue;
             if (!excluded.empty() && excluded.count(name))
                 continue;
-            auto path = plugins_dir / name;
-            if (std::filesystem::exists(path))
-                plugins.push_back(load_plugin(path));
+            for (auto &plugin : discovered)
+            {
+                if (plugin.name != name)
+                    continue;
+                plugins.push_back(load_plugin(plugin.path, plugin.name));
+                break;
+            }
         }
     }
     if (plugins.empty())
@@ -919,12 +1007,8 @@ void run_patch_script(const std::filesystem::path &script_path)
     {
         if (!script.plugins.empty() && std::filesystem::exists(script.plugins))
         {
-            for (const auto &entry : std::filesystem::directory_iterator(script.plugins))
-            {
-                if (entry.path().extension() != ".cpp")
-                    continue;
-                std::filesystem::copy_file(entry.path(), generated / entry.path().filename(), std::filesystem::copy_options::overwrite_existing);
-            }
+            for (auto &plugin : discover_plugins(script.plugins))
+                stage_plugin_sources(plugin.path, generated / plugin.name);
         }
         for (size_t index = 0; index < script.hooks.size(); ++index)
         {
