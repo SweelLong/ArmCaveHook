@@ -13,6 +13,11 @@
 #include <cctype>
 #include <algorithm>
 
+static std::string section_data_key(const std::string &segment_name, const std::string &name)
+{
+    return segment_name.empty() ? name : segment_name + "," + name;
+}
+
 static std::filesystem::path project_root()
 {
 #ifdef ARMCAVE_PROJECT_ROOT
@@ -499,7 +504,7 @@ static std::map<std::string, int> data_symbol_offsets(BinaryImage *obj, const st
         if (sym.name.empty() || sym.undefined() || sym.section_index == 0 || sym.section_index > sections.size())
             continue;
         const auto &section = sections[sym.section_index - 1];
-        auto section_offset = section_offsets.find(section.name);
+        auto section_offset = section_offsets.find(section_data_key(section.segment_name, section.name));
         if (section_offset == section_offsets.end())
             continue;
         uint64_t relative = sym.value;
@@ -901,7 +906,11 @@ static void append_asm_text_relocations(PluginBlob &blob, BinaryImage *image, Bi
                     uint64_t end = start + sec.size;
                     if (start <= r.symbol_value && r.symbol_value < end)
                     {
-                        r.symbol_section = sec.name;
+                        // text 引用保持裸名 "__text"（symbols.cpp 特判契约），
+                        // 不走 segment,name 数据键。
+                        r.symbol_section = sec.name == "__text"
+                            ? sec.name
+                            : section_data_key(sec.segment_name, sec.name);
                         r.symbol_value -= start;
                         break;
                     }
@@ -911,7 +920,9 @@ static void append_asm_text_relocations(PluginBlob &blob, BinaryImage *image, Bi
         else if (reloc.symbol_index > 0 && reloc.symbol_index <= image->sections().size())
         {
             auto &sec = image->sections()[reloc.symbol_index - 1];
-            r.symbol_section = sec.name;
+            r.symbol_section = sec.name == "__text"
+                ? sec.name
+                : section_data_key(sec.segment_name, sec.name);
         }
         blob.relocs.push_back(r);
     }
@@ -988,7 +999,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path, const std::filesyst
                 blob.has_writable_extra = true;
             while (extra.size() % 8 != 0)
                 extra.push_back(0);
-            blob.section_offsets[name] = (int)extra.size();
+            blob.section_offsets[section_data_key(sec.segment_name, name)] = (int)extra.size();
             auto content = sec.content(mo.bin->data());
             extra.insert(extra.end(), content.begin(), content.end());
         }
@@ -1057,7 +1068,7 @@ PluginBlob compile_plugin(const std::filesystem::path &path, const std::filesyst
         const auto &section = mo.bin->sections()[data_symbol->section_index - 1];
         if (section.name == "__text" || section.segment_name == "__TEXT" || section.virtual_address > data_symbol->value || data_symbol->value >= section.virtual_address + section.size)
             continue;
-        reloc.symbol_section = section.name;
+        reloc.symbol_section = section_data_key(section.segment_name, section.name);
         reloc.symbol_value = data_symbol->value - section.virtual_address;
     }
     for (const auto &action : blob.declarations)
