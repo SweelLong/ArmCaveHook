@@ -1,4 +1,3 @@
-# CMake / C++ build output
 /build/
 /build-*/
 /cmake-build-*/
@@ -10,21 +9,23 @@
 *.dll
 *.exe
 CMakeUserPresets.json
-
-# macOS
 .DS_Store
-
-# Tools
 .ida-mcp/
 .workbuddy/
-
-# User
+.qwen/
+.trae/
+.trae-cn/
+.kiro/
+.cursor/
+.windsurf/
+.github/
+.opencode/
+.clinerules/
+.cline/
+.codex/
+.claude/
+.gemini/
+.grok/
 *.patched
-
-# Scratch space a patch run drops here on purpose (the runtime itself uses the
-# OS temporary directory, which is reaped on reboot)
-/tmp/
-
-# These directories are now in the ArmCaveHook-Arcplugins submodule
 /plugins/
 /binaries/
