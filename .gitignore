@@ -12,6 +12,7 @@ CMakeUserPresets.json
 .DS_Store
 .ida-mcp/
 .workbuddy/
+.workbuddy-ai/
 .qwen/
 .trae/
 .trae-cn/
