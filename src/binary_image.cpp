@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
+#include <unordered_map>
 
 namespace
 {
@@ -851,8 +852,15 @@ void BinaryImage::parse_elf_dynamic(uint64_t dynamic_offset, uint64_t dynamic_si
     };
     parse_relas(rela_va, relasz);
     parse_relas(jmprel_va, pltrelsz);
-    if (pltgot_va)
+    if (pltgot_va && !imports_.empty())
     {
+        // slot_address -> imports_ 下标。原先对每个 4 字节位置线性遍历 imports_，
+        // 复杂度是 O(段字节数/4 * imports)；.so 的 exec 段有几 MB、imports 数千个时
+        // 单次解析就要多花好几秒。
+        std::unordered_map<uint64_t, size_t> slot_index;
+        slot_index.reserve(imports_.size() * 2);
+        for (size_t i = 0; i < imports_.size(); ++i)
+            slot_index.emplace(imports_[i].slot_address, i);
         for (const auto &segment : segments_)
         {
             if ((segment.init_protection & 1) == 0 || segment.file_offset > data_.size())
@@ -862,10 +870,14 @@ void BinaryImage::parse_elf_dynamic(uint64_t dynamic_offset, uint64_t dynamic_si
             {
                 size_t off = (size_t)(segment.file_offset + rel);
                 uint32_t adrp = read_le<uint32_t>(data_, off);
+                if ((adrp & 0x9f00001f) != 0x90000010)
+                    continue;
                 uint32_t ldr = read_le<uint32_t>(data_, off + 4);
+                if ((ldr & 0xffc003ff) != 0xf9400211)
+                    continue;
                 uint32_t add = read_le<uint32_t>(data_, off + 8);
                 uint32_t br = read_le<uint32_t>(data_, off + 12);
-                if ((adrp & 0x9f00001f) != 0x90000010 || (ldr & 0xffc003ff) != 0xf9400211 || (add & 0xffc003ff) != 0x91000210 || br != 0xd61f0220)
+                if ((add & 0xffc003ff) != 0x91000210 || br != 0xd61f0220)
                     continue;
                 int64_t imm21 = (int64_t)(((adrp >> 29) & 3) | ((adrp >> 3) & 0x1ffffc));
                 if (imm21 & 0x100000)
@@ -873,9 +885,9 @@ void BinaryImage::parse_elf_dynamic(uint64_t dynamic_offset, uint64_t dynamic_si
                 uint64_t pc = segment.virtual_address + rel;
                 uint64_t page = (pc & ~0xfffULL) + (imm21 << 12);
                 uint64_t slot = page + (((ldr >> 10) & 0xfff) * 8ULL);
-                for (auto &item : imports_)
-                    if (item.slot_address == slot)
-                        item.stub_address = pc;
+                auto it = slot_index.find(slot);
+                if (it != slot_index.end())
+                    imports_[it->second].stub_address = pc;
             }
         }
     }

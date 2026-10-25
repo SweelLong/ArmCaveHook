@@ -463,9 +463,16 @@ static uint64_t data_relocation_target(const RelocEntry &reloc, BinaryImage *bin
 std::pair<std::vector<uint8_t>, std::vector<uint8_t>>
 resolve_plugin_relocs(const std::vector<uint8_t> &text, const std::vector<uint8_t> &extra, const std::vector<RelocEntry> &relocs, const std::map<std::string, int> &offsets, const std::filesystem::path &binary_path, uint64_t text_va, uint64_t data_va)
 {
-    auto binary = BinaryImage::parse(binary_path);
-    if (!binary)
+    auto image = BinaryImage::parse(binary_path);
+    if (!image)
         throw std::runtime_error("failed to parse " + binary_path.string());
+    return resolve_plugin_relocs(text, extra, relocs, offsets, *image, text_va, data_va);
+}
+
+std::pair<std::vector<uint8_t>, std::vector<uint8_t>>
+resolve_plugin_relocs(const std::vector<uint8_t> &text, const std::vector<uint8_t> &extra, const std::vector<RelocEntry> &relocs, const std::map<std::string, int> &offsets, BinaryImage &image, uint64_t text_va, uint64_t data_va)
+{
+    BinaryImage *binary = &image;
     std::vector<uint8_t> text_buf = text;
     std::vector<uint8_t> extra_buf = extra;
     for (auto &r : relocs)
@@ -477,10 +484,10 @@ resolve_plugin_relocs(const std::vector<uint8_t> &text, const std::vector<uint8_
         auto &section = r.symbol_section;
         int64_t addend = r.addend;
         if (t == 0 && !name.empty())
-            write_qword(text_buf, off, relocation_target(r, binary.get(), offsets, text_va, data_va));
+            write_qword(text_buf, off, relocation_target(r, binary, offsets, text_va, data_va));
         else if (t == 2)
         {
-            uint64_t dst = relocation_target(r, binary.get(), offsets, text_va, data_va);
+            uint64_t dst = relocation_target(r, binary, offsets, text_va, data_va);
             uint64_t src = text_va + (uint64_t)off;
             uint32_t instruction = read_word(text_buf, off);
             if (!armcave::aarch64::fits_branch26(src, dst))
@@ -500,16 +507,16 @@ resolve_plugin_relocs(const std::vector<uint8_t> &text, const std::vector<uint8_
             patch_branch26(text_buf, off, src, dst);
         }
         else if (t == 3)
-            patch_page21(text_buf, off, text_va + (uint64_t)off, data_relocation_target(r, binary.get(), offsets, text_va, data_va));
+            patch_page21(text_buf, off, text_va + (uint64_t)off, data_relocation_target(r, binary, offsets, text_va, data_va));
         else if (t == 4)
-            patch_pageoff12(text_buf, off, data_relocation_target(r, binary.get(), offsets, text_va, data_va));
+            patch_pageoff12(text_buf, off, data_relocation_target(r, binary, offsets, text_va, data_va));
         else if (t == 5 && !name.empty())
-            patch_page21(text_buf, off, text_va + (uint64_t)off, data_relocation_target(r, binary.get(), offsets, text_va, data_va));
+            patch_page21(text_buf, off, text_va + (uint64_t)off, data_relocation_target(r, binary, offsets, text_va, data_va));
         else if (t == 7)
-            patch_pageoff12(text_buf, off, data_relocation_target(r, binary.get(), offsets, text_va, data_va));
+            patch_pageoff12(text_buf, off, data_relocation_target(r, binary, offsets, text_va, data_va));
         else if (t == 6 && !name.empty())
         {
-            uint64_t target = data_relocation_target(r, binary.get(), offsets, text_va, data_va);
+            uint64_t target = data_relocation_target(r, binary, offsets, text_va, data_va);
             if (resolve_armcave_data(name))
                 patch_ldr_to_add(text_buf, off, target);
             else

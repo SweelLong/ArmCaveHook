@@ -10,6 +10,7 @@
 *.exe
 CMakeUserPresets.json
 .DS_Store
+.cache/
 .ida-mcp/
 .workbuddy/
 .workbuddy-ai/

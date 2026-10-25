@@ -120,7 +120,7 @@ void add_segment(const std::filesystem::path &binary_path, const SegmentPlan &pl
     add_segments(binary_path, {plan}, output_path);
 }
 
-void add_segments(const std::filesystem::path &binary_path, const std::vector<SegmentPlan> &plans, const std::filesystem::path &output_path)
+std::unique_ptr<BinaryImage> add_segments(const std::filesystem::path &binary_path, const std::vector<SegmentPlan> &plans, const std::filesystem::path &output_path)
 {
     auto binary = BinaryImage::parse(binary_path);
     if (!binary)
@@ -145,6 +145,9 @@ void add_segments(const std::filesystem::path &binary_path, const std::vector<Se
             binary->add_elf_sections(pending);
     }
     binary->write(output_path);
+    // add_*_sections 末尾已按新布局重解析，binary 内部就是写出的内容；
+    // 直接交出去，调用方不必再读盘解析一次。
+    return binary;
 }
 
 void write_at_offset(const std::filesystem::path &path, int offset, const std::vector<uint8_t> &payload, int size)

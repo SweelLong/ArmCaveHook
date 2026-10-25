@@ -31,9 +31,10 @@ void add_segment(const std::filesystem::path &binary_path,
                  const SegmentPlan &plan,
                  const std::filesystem::path &output_path);
 
-void add_segments(const std::filesystem::path &binary_path,
-                  const std::vector<SegmentPlan> &plans,
-                  const std::filesystem::path &output_path);
+// 返回写回后的镜像（已按新布局重新解析），调用方可直接复用，避免再解析一次大文件。
+std::unique_ptr<class BinaryImage> add_segments(const std::filesystem::path &binary_path,
+                                               const std::vector<SegmentPlan> &plans,
+                                               const std::filesystem::path &output_path);
 
 void write_at_offset(const std::filesystem::path &path, int offset,
                      const std::vector<uint8_t> &payload, int size);

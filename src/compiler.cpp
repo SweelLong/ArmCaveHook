@@ -1174,3 +1174,19 @@ std::vector<uint8_t> PluginBlob::build(uint64_t text_va, uint64_t data_va, const
     }
     return out;
 }
+
+std::vector<uint8_t> PluginBlob::build(uint64_t text_va, uint64_t data_va, BinaryImage &target) const
+{
+    if (relocs.empty())
+        return build(text_va, data_va, (const std::filesystem::path *)nullptr);
+    auto [new_text, new_extra] = resolve_plugin_relocs(text, extra, relocs, section_offsets, target, text_va, data_va);
+    new_text.resize((size_t)max_text_bytes(), 0);
+    std::vector<uint8_t> out = new_text;
+    if (!new_extra.empty())
+    {
+        while (out.size() % 16 != 0)
+            out.push_back(0);
+        out.insert(out.end(), new_extra.begin(), new_extra.end());
+    }
+    return out;
+}

@@ -123,13 +123,73 @@ static std::string shell_quote(const std::string &value)
 }
 #endif
 
+struct BinaryCache
+{
+    std::unique_ptr<BinaryImage> image;
+    std::filesystem::path path;
+    std::filesystem::file_time_type time{};
+    uintmax_t size = 0;
+};
+
+static BinaryCache &binary_cache()
+{
+    static BinaryCache slot;
+    return slot;
+}
+
 static BinaryImage &parse_binary(const std::filesystem::path &path)
 {
-    static std::unique_ptr<BinaryImage> cached;
-    cached = BinaryImage::parse(path);
-    if (!cached)
+    // 按路径 + 大小 + 修改时间缓存。同一路径在一次 pipeline 里会被解析多次
+    // （add_segments 之后、布局查询、patch 应用前），重复解析 30MB ELF 要花掉数百毫秒。
+    auto &slot = binary_cache();
+
+    std::error_code ec;
+    auto stamp = std::filesystem::last_write_time(path, ec);
+    auto size = std::filesystem::file_size(path, ec);
+    if (slot.image && slot.path == path && !ec && slot.time == stamp && slot.size == size)
+        return *slot.image;
+
+    slot.image = BinaryImage::parse(path);
+    if (!slot.image)
         throw std::runtime_error("failed to parse " + path.string());
-    return *cached;
+    slot.path = path;
+    slot.time = stamp;
+    slot.size = size;
+    return *slot.image;
+}
+
+// add_segments 已经把写出的文件按新布局解析过，这里直接接管那份结果，
+// 让随后的 parse_binary(output_path) 命中缓存而不必重读 30MB。
+static void prime_binary_cache(const std::filesystem::path &path, std::unique_ptr<BinaryImage> image)
+{
+    if (!image)
+        return;
+    std::error_code ec;
+    auto stamp = std::filesystem::last_write_time(path, ec);
+    auto size = std::filesystem::file_size(path, ec);
+    if (ec)
+        return;
+    auto &slot = binary_cache();
+    slot.image = std::move(image);
+    slot.path = path;
+    slot.time = stamp;
+    slot.size = size;
+}
+
+// 原地覆盖写（write_at_offset）只改代码字节、不改段/section 布局，
+// 解析结果依然有效；这里只刷新 stamp，避免写一次就重解析 30MB。
+static void refresh_binary_cache_stamp(const std::filesystem::path &path)
+{
+    auto &slot = binary_cache();
+    if (!slot.image || slot.path != path)
+        return;
+    std::error_code ec;
+    auto stamp = std::filesystem::last_write_time(path, ec);
+    auto size = std::filesystem::file_size(path, ec);
+    if (ec)
+        return;
+    slot.time = stamp;
+    slot.size = size;
 }
 
 static int file_offset(BinaryImage &binary, uint64_t va)
@@ -220,7 +280,9 @@ public:
     {
         if (index >= values.size())
             return;
-        if (percent < values[index])
+        // 必须用 <=：同一个插件会被反复上报同一个百分比（每个补丁点都报 100），
+        // 用 < 会让每次都重画整张表，日志瞬间刷出上千行重复内容。
+        if (percent <= values[index])
             return;
         values[index] = std::min(percent, 100);
         if (interactive)
@@ -231,7 +293,25 @@ public:
     {
         for (auto &value : values)
             value = 100;
-        render();
+        if (interactive)
+        {
+            render();
+            return;
+        }
+        // 非交互（重定向到文件 / CI）没有光标回退，逐插件逐阶段打印会把日志刷成
+        // 几十屏重复内容。这里只在结束时按插件顺序输出最终状态。
+        for (size_t i = 0; i < values.size(); ++i)
+        {
+            std::string name = names[i];
+            if (name.size() > 24)
+                name.resize(24);
+            std::printf("[%zu/%zu] %-24s [", i + 1, values.size(), name.c_str());
+            const int width = 24;
+            for (int cell = 0; cell < width; ++cell)
+                std::putchar('#');
+            std::printf("] 100%%\n");
+        }
+        std::fflush(stdout);
     }
 
 private:
@@ -664,7 +744,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path, const std
         }
     }
     if (!segment_plans.empty())
-        add_segments(output_path, segment_plans, output_path);
+        prime_binary_cache(output_path, add_segments(output_path, segment_plans, output_path));
     auto &layout = parse_binary(output_path);
     for (auto &cp : compiled)
     {
@@ -693,7 +773,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path, const std
         uint64_t code_va = cp.segment_va + cp.code_offset;
         int text_aligned = ((cp.blob.max_text_bytes()) + 15) & ~15;
         uint64_t data_va = !cp.blob.has_writable_extra ? (code_va + text_aligned) : cp.data_segment_va;
-        auto built = cp.blob.build(code_va, data_va, &output_path);
+        auto built = cp.blob.build(code_va, data_va, layout);
         size_t code_bytes = std::min((size_t)text_aligned, built.size());
         place(cp.content, cp.code_offset, std::vector<uint8_t>(built.begin(), built.begin() + code_bytes));
         if (!cp.blob.extra.empty() && (int)built.size() > text_aligned)
@@ -714,9 +794,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path, const std
         }
         progress.update(cp.progress_index, 72);
     }
-    auto output_image = BinaryImage::parse(output_path);
-    if (!output_image)
-        throw std::runtime_error("failed to parse " + output_path.string());
+    auto &output_image = parse_binary(output_path);
     for (auto &[cp, action] : direct)
     {
         uint64_t code_va = cp->has_hooks ? cp->segment_va + (uint64_t)cp->code_offset : 0;
@@ -732,9 +810,9 @@ static bool standard_pipeline(const std::filesystem::path &input_path, const std
                 targets[registered.function_name] = cp->segment_va + (uint64_t)wrapper->second;
         }
         auto payload = patch_payload(*action, targets, output_va_range);
-        if (action->has_expected && !matches_expected(*output_image, output_path, *action, payload, targets, output_va_range))
+        if (action->has_expected && !matches_expected(output_image, output_path, *action, payload, targets, output_va_range))
             continue;
-        patch_bytes_va(*output_image, output_path, action->address, payload);
+        patch_bytes_va(output_image, output_path, action->address, payload);
     }
     for (auto &cp : compiled)
         if (!cp.has_hooks)
@@ -780,6 +858,7 @@ static bool standard_pipeline(const std::filesystem::path &input_path, const std
         }
         progress.update(cp.progress_index, 95);
     }
+    refresh_binary_cache_stamp(output_path);
     auto &patch_layout = parse_binary(output_path);
     auto patch_sites = [&](auto &sites)
     {

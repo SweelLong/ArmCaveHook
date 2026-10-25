@@ -53,6 +53,9 @@ struct PluginBlob
     int max_text_bytes() const;
     PluginBlob for_action(const HookAction &action) const;
     std::vector<uint8_t> build(uint64_t text_va, uint64_t data_va, const std::filesystem::path *target_binary) const;
+
+    // 传入已解析的目标镜像，避免每个插件各自 parse 一遍大文件。
+    std::vector<uint8_t> build(uint64_t text_va, uint64_t data_va, BinaryImage &target) const;
 };
 
 std::vector<uint8_t> extract_cave_asm_save();
